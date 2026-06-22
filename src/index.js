@@ -20,17 +20,43 @@ const SOLANA_RPC_ENDPOINTS = [
   "https://solana.drpc.org",
 ];
 
-// Lit le corps brut de la requete (pas de body-parser monte par defaut).
-function readBody(req) {
+// Lit le corps de la requete.
+// @colyseus/tools monte deja un body-parser (express.json) qui CONSOMME le flux :
+// dans ce cas req.body est deja parse et lire le flux brut bloquerait pour
+// toujours (l'evenement "end" ne se redeclenche pas). On privilegie donc req.body,
+// avec repli sur la lecture brute + timeout pour ne jamais rester bloque.
+function readRawBody(req) {
   return new Promise((resolve, reject) => {
     let data = "";
+    const timer = setTimeout(() => reject(new Error("body read timeout")), 5000);
     req.on("data", (chunk) => {
       data += chunk;
-      if (data.length > 1e6) reject(new Error("payload too large"));
+      if (data.length > 1e6) {
+        clearTimeout(timer);
+        reject(new Error("payload too large"));
+      }
     });
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
+    req.on("end", () => {
+      clearTimeout(timer);
+      resolve(data);
+    });
+    req.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
   });
+}
+
+async function getRpcBody(req) {
+  // Corps deja parse par express.json (cas @colyseus/tools).
+  if (req.body && typeof req.body === "object" && Object.keys(req.body).length) {
+    return JSON.stringify(req.body);
+  }
+  if (typeof req.body === "string" && req.body.length) {
+    return req.body;
+  }
+  // Aucun body-parser : lire le flux brut (avec timeout).
+  return await readRawBody(req);
 }
 
 async function handleSolanaRpc(req, res) {
@@ -49,7 +75,7 @@ async function handleSolanaRpc(req, res) {
 
   let body;
   try {
-    body = await readBody(req);
+    body = await getRpcBody(req);
   } catch (e) {
     res.statusCode = 400;
     return res.end(JSON.stringify({ error: "Invalid body" }));
