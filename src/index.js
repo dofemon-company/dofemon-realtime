@@ -9,8 +9,23 @@
 
 import tools from "@colyseus/tools";
 import { WorldRoom } from "./rooms/WorldRoom.js";
+import { startHandler, actionHandler, currentHandler } from "./combat/handlers.js";
 
 const PORT = Number(process.env.PORT) || 2567;
+
+// CORS pour les routes combat : le jeu (game.dofemon.com) appelle play.dofemon.com
+// avec un header Authorization -> preflight OPTIONS obligatoire, et Authorization
+// doit etre autorise dans Access-Control-Allow-Headers.
+function combatCors(req, res, next) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") {
+    res.statusCode = 204;
+    return res.end();
+  }
+  next();
+}
 
 // Proxy RPC Solana (porte depuis Vercel api/solana-rpc.js).
 // Round-robin sur des endpoints publics ; aucune cle requise.
@@ -120,6 +135,14 @@ tools.listen(
       // Proxy RPC Solana (remplace Vercel /api/solana-rpc).
       app.post("/api/solana-rpc", handleSolanaRpc);
       app.options("/api/solana-rpc", handleSolanaRpc);
+
+      // Combat (remplace Vercel /api/combat/*). Semantique identique aux originaux.
+      app.options("/api/combat/start", combatCors);
+      app.options("/api/combat/action", combatCors);
+      app.options("/api/combat/current", combatCors);
+      app.post("/api/combat/start", combatCors, startHandler);
+      app.post("/api/combat/action", combatCors, actionHandler);
+      app.get("/api/combat/current", combatCors, currentHandler);
     },
   },
   PORT
