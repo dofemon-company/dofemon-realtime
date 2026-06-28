@@ -31,7 +31,8 @@ function makeBefore() {
   };
 }
 
-// Reproduit le câblage client : rng qui enregistre + entités "after" depuis newState.
+// Reproduit le câblage client : rng qui enregistre + entités "after" depuis newState
+// + events du moteur (clone JSON, comme endShadowCast).
 function clientCast(before, intention) {
   const snapshot = buildSnapshotFromState(before);
   const draws = [];
@@ -42,7 +43,12 @@ function clientCast(before, intention) {
       hp: e.hp, dead: e.dead, x: e.x, y: e.y, elemType: e.elemType,
     })),
   };
-  return { before, intention: { ...intention, rngDraws: draws }, after };
+  return {
+    before,
+    intention: { ...intention, rngDraws: draws },
+    events: JSON.parse(JSON.stringify(r.events || [])),
+    after,
+  };
 }
 
 test("shadow — un cast fidèle ne produit AUCUN écart", () => {
@@ -55,6 +61,34 @@ test("shadow — un cast fidèle ne produit AUCUN écart", () => {
   assert.equal(res.casts, 1);
   assert.equal(res.mismatched, 0, "rejeu serveur identique au client");
   assert.equal(res.matched, 1);
+});
+
+test("shadow — un sort à effet (events) rejoué fidèlement = 0 écart", () => {
+  const before = makeBefore();
+  // Sort de dégât + debuff (effect_type) → émet un event applyPrimaryEffect en plus.
+  const spell = {
+    id: "venom", damage: 8, area: false, range: 5, type: "normal",
+    effect_type: "debuff", effect_chance: 1, stat: "force", value: -5, duration: 3,
+  };
+  const intention = { type: "castSpell", casterId: 0, spell, targetX: 8, targetY: 10 };
+  const cast = clientCast(before, intention);
+  assert.ok(cast.events.length >= 2, "au moins un event d'effet émis");
+
+  const res = runShadowComparison([cast], { addr: "testaddr" });
+  assert.equal(res.mismatched, 0, "events serveur identiques au client");
+  assert.equal(res.matched, 1);
+});
+
+test("shadow — une séquence d'events falsifiée EST détectée", () => {
+  const before = makeBefore();
+  const spell = { id: "strike", damage: 12, area: false, range: 5, type: "normal" };
+  const intention = { type: "castSpell", casterId: 0, spell, targetX: 8, targetY: 10 };
+  const cast = clientCast(before, intention);
+  // triche : on retire un event côté client.
+  cast.events.pop();
+
+  const res = runShadowComparison([cast], { addr: "testaddr" });
+  assert.equal(res.mismatched, 1, "l'écart de longueur d'events est détecté");
 });
 
 test("shadow — un `after` falsifié EST détecté comme écart", () => {

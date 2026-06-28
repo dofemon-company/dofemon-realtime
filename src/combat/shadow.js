@@ -35,6 +35,25 @@ function makeRngQueue(draws) {
 
 const FIELDS = ["hp", "dead", "x", "y", "elemType"];
 
+// Compare la SÉQUENCE d'events du moteur (serveur vs client). Comme les deux
+// proviennent du MÊME code moteur, l'ordre des clés est identique → l'égalité
+// JSON par event est valide et robuste. Valide l'application des effets
+// (applyPrimaryEffect/applyMultiBuff/secondarySpellEffect…) absente de newState.
+// Renvoie null si identiques (ou si le client n'envoie pas d'events = ancien client).
+function diffEvents(serverEvents, clientEvents) {
+  if (!Array.isArray(clientEvents)) return null; // rétro-compat : pas d'events client
+  const sv = Array.isArray(serverEvents) ? serverEvents : [];
+  if (sv.length !== clientEvents.length) {
+    return { reason: "length", server: sv.length, client: clientEvents.length };
+  }
+  for (let i = 0; i < sv.length; i++) {
+    const a = JSON.stringify(sv[i]);
+    const b = JSON.stringify(clientEvents[i]);
+    if (a !== b) return { reason: "event", index: i, server: sv[i], client: clientEvents[i] };
+  }
+  return null;
+}
+
 // Compare l'état d'arrivée serveur (newState) à l'état client (after).
 // Renvoie la liste des écarts {index, field, expected, got}.
 function diffEntities(serverEntities, clientAfter) {
@@ -85,9 +104,10 @@ export function runShadowComparison(shadowCasts, meta = {}) {
       const r = resolveSpell(snapshot, { casterId, spell, targetX, targetY }, rng);
 
       const diffs = diffEntities(r.newState.entities, cast.after);
+      const evDiff = diffEvents(r.events, cast.events);
       const { remaining, overflow } = rng.stats();
 
-      if (diffs.length === 0 && overflow === 0) {
+      if (diffs.length === 0 && overflow === 0 && !evDiff) {
         matched++;
       } else {
         mismatched++;
@@ -96,7 +116,8 @@ export function runShadowComparison(shadowCasts, meta = {}) {
             `caster=${casterId} target=(${targetX},${targetY}) ` +
             `rng[used=${(Array.isArray(rngDraws) ? rngDraws.length : 0) - remaining}` +
             `/${Array.isArray(rngDraws) ? rngDraws.length : 0}${overflow ? ` +${overflow} overflow` : ""}] ` +
-            `diffs=${JSON.stringify(diffs.slice(0, 8))}`
+            `diffs=${JSON.stringify(diffs.slice(0, 8))}` +
+            (evDiff ? ` events=${JSON.stringify(evDiff)}` : "")
         );
       }
     } catch (e) {
