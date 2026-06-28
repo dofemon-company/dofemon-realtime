@@ -591,7 +591,16 @@ export function resolveSpell(snapshot, action, rng) {
         // dodge/invulnérable ont fait `continue`).
         if (spell.effect_type && SINGLE_STATUS_EFFECTS.includes(spell.effect_type)) {
             const applies = !spell.effect_chance || rng() < spell.effect_chance;
-            if (applies) events.push({ type: 'applyPrimaryEffect', targetId });
+            if (applies) {
+                events.push({ type: 'applyPrimaryEffect', targetId });
+                // Buff de maxHp : le gain de PV max augmente AUSSI les PV courants (parité
+                // combat.js l.8334-8340). Porté par newState pour l'autorité serveur (le
+                // serveur n'a pas de coquille qui rejoue ce bump). La coquille NE le refait
+                // PLUS (sinon double application : elle applique newState PUIS rejoue).
+                if (spell.effect_type === 'buff' && spell.stat === 'maxHp' && spell.value > 0) {
+                    target.hp = Math.min(target.maxHp + spell.value, target.hp + spell.value);
+                }
+            }
         }
 
         // 2bis-b. Changement de type (primaire) — combat.js l.8952-8956. Même gating
@@ -627,9 +636,20 @@ export function resolveSpell(snapshot, action, rng) {
         // moteur tire l'INDEX (décision gameable) et l'émet ; la coquille applique.
         if (spell.effect_type === 'multi_buff' && Array.isArray(spell.multi_buffs)) {
             events.push({ type: 'applyMultiBuff', targetId });
+            // Cumul des gains de maxHp → bump des PV courants en newState (parité l.8265-8271).
+            let maxHpGain = 0;
+            for (const buffDef of spell.multi_buffs) {
+                if (buffDef.type === 'buff' && buffDef.stat === 'maxHp' && buffDef.value > 0) maxHpGain += buffDef.value;
+            }
+            if (maxHpGain > 0) target.hp = Math.min(target.maxHp + maxHpGain, target.hp + maxHpGain);
         } else if (spell.effect_type === 'random_buff' && Array.isArray(spell.random_buffs) && spell.random_buffs.length > 0) {
             const index = Math.floor(rng() * spell.random_buffs.length);
             events.push({ type: 'applyRandomBuff', targetId, index });
+            // Buff choisi de maxHp → bump des PV courants en newState (parité l.8291-8297).
+            const selectedBuff = spell.random_buffs[index];
+            if (selectedBuff && selectedBuff.type === 'buff' && selectedBuff.stat === 'maxHp' && selectedBuff.value > 0) {
+                target.hp = Math.min(target.maxHp + selectedBuff.value, target.hp + selectedBuff.value);
+            }
         }
 
         // 2quinquies-bis. Mouvement secondaire (effect_type_2: movement) — combat.js

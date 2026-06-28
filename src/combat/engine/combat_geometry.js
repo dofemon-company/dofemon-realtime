@@ -371,3 +371,206 @@ export function slidePush(startX, startY, dirX, dirY, distance, mapBounds, isWal
     }
     return { x, y, moved };
 }
+
+/**
+ * Cases accessibles par une entité (BFS limité par ses PM), PURE. Réplique fidèle de
+ * combat_utils.calculateReachable (l.1366-1423) : BFS 4-directions, coût = distance,
+ * inclut la case de départ (coût 0). L'ordre des cases est PRÉSERVÉ (FIFO + voisins
+ * dans l'ordre [bas, haut, droite, gauche]) — important car l'IA départage les
+ * meilleures cases dans cet ordre. Parties impures INJECTÉES par `ctx` :
+ *   - mapBounds : bornes de la map (isInCombatZone).
+ *   - isWalkable(x, y) : prédicat de walkability (déjà résolu : terrain + occupation +
+ *     statue + exception camouflage éventuelle). Pour l'IA ennemie = walkability brute.
+ *
+ * Le `console.warn` et l'option camouflage (isPlayerControlledEntity) de l'original
+ * sont hors décision : le 1er est cosmétique, la 2e est absorbée par `isWalkable`.
+ *
+ * @param {{x:number, y:number, pm?:number}} entity
+ * @param {{mapBounds:?object, isWalkable:(x:number,y:number)=>boolean}} ctx
+ * @returns {Array<{x:number, y:number, cost:number}>}
+ */
+export function computeReachableTiles(entity, ctx) {
+    const reachableTiles = [];
+    const currentX = entity.x;
+    const currentY = entity.y;
+    const currentPm = entity.pm || 0;
+
+    if (currentPm <= 0) return [];
+    if (!isInCombatZone(currentX, currentY, ctx.mapBounds)) return [];
+
+    const q = [{ x: currentX, y: currentY, dist: 0 }];
+    const v = new Set([currentX + "," + currentY]);
+
+    // Case de départ accessible (coût 0).
+    reachableTiles.push({ x: currentX, y: currentY, cost: 0 });
+
+    while (q.length) {
+        const c = q.shift();
+        if (c.dist > 0 && isInCombatZone(c.x, c.y, ctx.mapBounds)) {
+            reachableTiles.push({ x: c.x, y: c.y, cost: c.dist });
+        }
+        if (c.dist < currentPm) {
+            [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(d => {
+                const nx = c.x + d[0];
+                const ny = c.y + d[1];
+                if (isInCombatZone(nx, ny, ctx.mapBounds) && ctx.isWalkable(nx, ny) && !v.has(nx + "," + ny)) {
+                    v.add(nx + "," + ny);
+                    q.push({ x: nx, y: ny, dist: c.dist + 1 });
+                }
+            });
+        }
+    }
+    return reachableTiles;
+}
+
+/**
+ * Ligne de vue entre (x1,y1) et (x2,y2), PURE. Réplique fidèle de
+ * combat_utils.checkLoS (l.1243-1364) : Bresenham + règles d'obstacle adjacent
+ * (cardinal = bloque si la ligne passe par l'obstacle ; diagonal = bloque les 3
+ * cases les plus éloignées derrière) + blocage par les ennemis (un allié ne bloque
+ * pas). Parties impures INJECTÉES par `ctx` :
+ *   - mapBounds : bornes de la map (isInCombatZone).
+ *   - blocksLoS(x, y) : true si une structure de cette case bloque la ligne de vue.
+ *   - entities : pour trouver le lanceur (case de départ) et les bloqueurs.
+ * Le départage allié/ennemi utilise `sameTeam` local (== isSameTeam, byte-identique).
+ *
+ * @param {number} x1 @param {number} y1 @param {number} x2 @param {number} y2
+ * @param {{mapBounds:?object, blocksLoS:(x:number,y:number)=>boolean, entities:object[]}} ctx
+ * @returns {boolean}
+ */
+export function computeLineOfSight(x1, y1, x2, y2, ctx) {
+    const mapBounds = ctx.mapBounds;
+    const blocksLoS = ctx.blocksLoS;
+    const entities = ctx.entities || [];
+
+    if (!isInCombatZone(x1, y1, mapBounds) || !isInCombatZone(x2, y2, mapBounds)) {
+        return false;
+    }
+
+    const adjacentDirections = [
+        { dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 },
+        { dx: 1, dy: 1 }, { dx: 1, dy: -1 }, { dx: -1, dy: 1 }, { dx: -1, dy: -1 },
+    ];
+
+    function linePassesThrough(ax, ay, bx, by, px, py) {
+        let ddx = Math.abs(bx - ax), ddy = Math.abs(by - ay);
+        let sx = (ax < bx) ? 1 : -1, sy = (ay < by) ? 1 : -1;
+        let err = ddx - ddy, cx = ax, cy = ay;
+        while (true) {
+            if (cx === px && cy === py) return true;
+            if (cx === bx && cy === by) return false;
+            if (!isInCombatZone(cx, cy, mapBounds)) return false;
+            let e2 = 2 * err;
+            if (e2 > -ddy) { err -= ddy; cx += sx; }
+            if (e2 < ddx) { err += ddx; cy += sy; }
+        }
+    }
+    const isCardinal = (dx, dy) => (dx === 0) !== (dy === 0);
+
+    for (const dir of adjacentDirections) {
+        const obstacleX = x1 + dir.dx;
+        const obstacleY = y1 + dir.dy;
+
+        let isObstacle = false;
+        if (isInCombatZone(obstacleX, obstacleY, mapBounds)) {
+            isObstacle = blocksLoS(obstacleX, obstacleY);
+        }
+
+        if (isObstacle) {
+            if (isCardinal(dir.dx, dir.dy)) {
+                if (linePassesThrough(x1, y1, x2, y2, obstacleX, obstacleY)) return false;
+            } else {
+                const tilesAroundObstacle = [];
+                for (let ox = -1; ox <= 1; ox++) {
+                    for (let oy = -1; oy <= 1; oy++) {
+                        const tileX = obstacleX + ox;
+                        const tileY = obstacleY + oy;
+                        if (isInCombatZone(tileX, tileY, mapBounds)) {
+                            const distance = Math.abs(tileX - x1) + Math.abs(tileY - y1);
+                            tilesAroundObstacle.push({ x: tileX, y: tileY, distance });
+                        }
+                    }
+                }
+                tilesAroundObstacle.sort((a, b) => {
+                    if (b.distance !== a.distance) return b.distance - a.distance;
+                    const alignA = (a.x - obstacleX) * dir.dx + (a.y - obstacleY) * dir.dy;
+                    const alignB = (b.x - obstacleX) * dir.dx + (b.y - obstacleY) * dir.dy;
+                    return alignB - alignA;
+                });
+                const threeFarthest = tilesAroundObstacle.slice(0, 3);
+                for (const tile of threeFarthest) {
+                    if (tile.x === x2 && tile.y === y2) return false;
+                }
+            }
+        }
+    }
+
+    const sourceEntity = entities.find(e => e.x === x1 && e.y === y1 && !e.dead);
+
+    let dx = Math.abs(x2 - x1), dy = Math.abs(y2 - y1);
+    let sx = (x1 < x2) ? 1 : -1, sy = (y1 < y2) ? 1 : -1;
+    let err = dx - dy, cx = x1, cy = y1;
+    while (true) {
+        if (cx === x2 && cy === y2) return true;
+        if (!isInCombatZone(cx, cy, mapBounds)) return false;
+
+        // Case en zone ici (garde ci-dessus) → terrain bloquant la ligne de vue ?
+        const blocks = blocksLoS(cx, cy);
+        if (blocks && (cx !== x1 || cy !== y1)) return false;
+
+        if (cx !== x1 || cy !== y1) {
+            const entityOnTile = entities.find(e => e.x === cx && e.y === cy && !e.dead);
+            if (entityOnTile && sourceEntity) {
+                if (!sameTeam(entityOnTile, sourceEntity)) {
+                    return false;
+                }
+            }
+        }
+
+        let e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; cx += sx; }
+        if (e2 < dx) { err += dx; cy += sy; }
+    }
+}
+
+/**
+ * Chemin LIBRE pour le sort charge entre (x1,y1) et (x2,y2), PURE. Réplique de
+ * combat_utils.isChargePathClear (l.1152-1241) : doit être en ligne droite (croix) ;
+ * toutes les cases INTERMÉDIAIRES (hors case finale, qui peut contenir la cible)
+ * doivent être en zone, non bloquées par le terrain, et libres de toute entité
+ * vivante autre que le lanceur. Parties impures INJECTÉES par `ctx` :
+ *   - mapBounds : bornes (isInCombatZone).
+ *   - isTerrainBlocked(x,y) : true si le terrain bloque le mouvement (combatMap.isWalkable
+ *     faux OU gameMap 1/2) — MÊME prédicat que isWalkable côté terrain.
+ *   - entities + sourceEntity : entités du combat et le lanceur (exclu du blocage).
+ *
+ * @param {number} x1 @param {number} y1 @param {number} x2 @param {number} y2
+ * @param {{mapBounds:?object, isTerrainBlocked:(x:number,y:number)=>boolean, entities:object[], sourceEntity:object}} ctx
+ * @returns {boolean}
+ */
+export function computeChargePathClear(x1, y1, x2, y2, ctx) {
+    const { mapBounds, isTerrainBlocked, entities, sourceEntity } = ctx;
+
+    if (!isInCombatZone(x1, y1, mapBounds) || !isInCombatZone(x2, y2, mapBounds)) return false;
+
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    if (dx !== 0 && dy !== 0) return false; // pas en ligne droite
+
+    const steps = Math.max(Math.abs(dx), Math.abs(dy));
+    if (steps <= 1) return true; // pas de case intermédiaire
+
+    let cx = x1, cy = y1;
+    const stepX = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
+    const stepY = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
+
+    for (let i = 1; i < steps; i++) {
+        cx += stepX;
+        cy += stepY;
+        if (!isInCombatZone(cx, cy, mapBounds)) return false;
+        if (isTerrainBlocked(cx, cy)) return false;
+        const entityOnTile = (entities || []).find(e => e.x === cx && e.y === cy && !e.dead && e !== sourceEntity);
+        if (entityOnTile) return false;
+    }
+    return true;
+}
