@@ -10,6 +10,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { fastForwardCombat } from "./simulation.js";
+import { runShadowComparison } from "./shadow.js";
 
 const TURN_DURATION_MS = 20000; // 20 s par tour (heros/allie)
 
@@ -176,9 +177,17 @@ export async function actionHandler(req, res) {
     const solanaAddress = await resolveSolanaAddress(req, res, supabase);
     if (!solanaAddress) return;
 
-    const { action, combatState: clientCombatState } = req.body || {};
+    const { action, combatState: clientCombatState, shadowCasts } = req.body || {};
     if (!clientCombatState) {
       return res.status(400).json({ error: "combatState is required" });
+    }
+
+    // SHADOW (2b.3 S2) : rejeu + comparaison du moteur autoritatif. 100% passif
+    // (log seul, ne touche ni la réponse ni le stockage). Jamais bloquant.
+    try {
+      runShadowComparison(shadowCasts, { addr: solanaAddress, action });
+    } catch (e) {
+      console.warn("[shadow] comparaison ignorée:", e && e.message);
     }
 
     const { data: existingSave, error: fetchError } = await supabase
