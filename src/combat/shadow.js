@@ -91,6 +91,7 @@ export function runShadowComparison(shadowCasts, meta = {}) {
 
   let matched = 0;
   let mismatched = 0;
+  let eventsChecked = 0; // casts où le client a envoyé ses events (= comparaison events ACTIVE)
   const tag = `[shadow${meta.addr ? " " + String(meta.addr).slice(0, 8) : ""}]`;
 
   for (let k = 0; k < shadowCasts.length; k++) {
@@ -105,6 +106,7 @@ export function runShadowComparison(shadowCasts, meta = {}) {
 
       const diffs = diffEntities(r.newState.entities, cast.after);
       const evDiff = diffEvents(r.events, cast.events);
+      if (Array.isArray(cast.events)) eventsChecked++;
       const { remaining, overflow } = rng.stats();
 
       if (diffs.length === 0 && overflow === 0 && !evDiff) {
@@ -127,8 +129,8 @@ export function runShadowComparison(shadowCasts, meta = {}) {
   }
 
   console.log(
-    `${tag} ${meta.action || ""} casts=${shadowCasts.length} match=${matched} mismatch=${mismatched}`
+    `${tag} ${meta.action || ""} casts=${shadowCasts.length} match=${matched} mismatch=${mismatched} ev=${eventsChecked}`
   );
 
-  return { casts: shadowCasts.length, matched, mismatched };
+  return { casts: shadowCasts.length, matched, mismatched, eventsChecked };
 }
