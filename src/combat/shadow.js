@@ -92,6 +92,7 @@ export function runShadowComparison(shadowCasts, meta = {}) {
   let matched = 0;
   let mismatched = 0;
   let eventsChecked = 0; // casts où le client a envoyé ses events (= comparaison events ACTIVE)
+  const spellIds = []; // ids des sorts comparés (preuve positive de ce qui est exercé)
   const tag = `[shadow${meta.addr ? " " + String(meta.addr).slice(0, 8) : ""}]`;
 
   for (let k = 0; k < shadowCasts.length; k++) {
@@ -99,6 +100,7 @@ export function runShadowComparison(shadowCasts, meta = {}) {
     try {
       if (!cast || !cast.before || !cast.intention) continue;
       const { casterId, spell, targetX, targetY, rngDraws } = cast.intention;
+      if (spell && spell.id) spellIds.push(spell.id);
 
       const snapshot = buildSnapshotFromState(cast.before);
       const rng = makeRngQueue(rngDraws);
@@ -129,7 +131,8 @@ export function runShadowComparison(shadowCasts, meta = {}) {
   }
 
   console.log(
-    `${tag} ${meta.action || ""} casts=${shadowCasts.length} match=${matched} mismatch=${mismatched} ev=${eventsChecked}`
+    `${tag} ${meta.action || ""} casts=${shadowCasts.length} match=${matched} mismatch=${mismatched} ev=${eventsChecked}` +
+      (spellIds.length ? ` spells=${JSON.stringify(spellIds)}` : "")
   );
 
   return { casts: shadowCasts.length, matched, mismatched, eventsChecked };
