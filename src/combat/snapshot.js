@@ -73,6 +73,8 @@ export function buildSnapshotFromState(combatState) {
             isNPCCreature: e.isNPCCreature,
             hp: e.hp,
             maxHp: e.maxHp,
+            pm: e.pm,
+            maxPm: e.maxPm,
             dead: e.dead,
             x: e.x,
             y: e.y,

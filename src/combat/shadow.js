@@ -33,7 +33,7 @@ function makeRngQueue(draws) {
   return fn;
 }
 
-const FIELDS = ["hp", "dead", "x", "y", "elemType"];
+const FIELDS = ["hp", "dead", "x", "y", "elemType", "pm"];
 
 // Compare la SÉQUENCE d'events du moteur (serveur vs client). Comme les deux
 // proviennent du MÊME code moteur, l'ordre des clés est identique → l'égalité

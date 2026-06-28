@@ -600,6 +600,15 @@ export function resolveSpell(snapshot, action, rng) {
                 if (spell.effect_type === 'buff' && spell.stat === 'maxHp' && spell.value > 0) {
                     target.hp = Math.min(target.maxHp + spell.value, target.hp + spell.value);
                 }
+                // Buff de PM : gain de PM max → gain de PM courants (parité l.8344-8347).
+                // Debuff de PM : la baisse de PM max écrête les PM courants (parité l.8348-8353).
+                // Portés par newState (pm/maxPm dans le snapshot) ; coquille ne refait plus le bump.
+                if (spell.effect_type === 'buff' && spell.stat === 'pm' && spell.value > 0) {
+                    target.pm = Math.min(target.maxPm + spell.value, target.pm + spell.value);
+                } else if (spell.effect_type === 'debuff' && spell.stat === 'pm' && spell.value < 0) {
+                    const newMaxPm = target.maxPm + spell.value;
+                    if (target.pm > newMaxPm) target.pm = newMaxPm;
+                }
             }
         }
 
@@ -636,19 +645,25 @@ export function resolveSpell(snapshot, action, rng) {
         // moteur tire l'INDEX (décision gameable) et l'émet ; la coquille applique.
         if (spell.effect_type === 'multi_buff' && Array.isArray(spell.multi_buffs)) {
             events.push({ type: 'applyMultiBuff', targetId });
-            // Cumul des gains de maxHp → bump des PV courants en newState (parité l.8265-8271).
+            // Cumul des gains maxHp/PM → bump des PV/PM courants en newState (parité l.8265-8295).
             let maxHpGain = 0;
+            let pmGain = 0;
             for (const buffDef of spell.multi_buffs) {
-                if (buffDef.type === 'buff' && buffDef.stat === 'maxHp' && buffDef.value > 0) maxHpGain += buffDef.value;
+                if (buffDef.type === 'buff' && buffDef.value > 0) {
+                    if (buffDef.stat === 'maxHp') maxHpGain += buffDef.value;
+                    else if (buffDef.stat === 'pm') pmGain += buffDef.value;
+                }
             }
             if (maxHpGain > 0) target.hp = Math.min(target.maxHp + maxHpGain, target.hp + maxHpGain);
+            if (pmGain > 0) target.pm = Math.min(target.maxPm + pmGain, target.pm + pmGain);
         } else if (spell.effect_type === 'random_buff' && Array.isArray(spell.random_buffs) && spell.random_buffs.length > 0) {
             const index = Math.floor(rng() * spell.random_buffs.length);
             events.push({ type: 'applyRandomBuff', targetId, index });
-            // Buff choisi de maxHp → bump des PV courants en newState (parité l.8291-8297).
+            // Buff choisi de maxHp/PM → bump des PV/PM courants en newState (parité l.8291-8313).
             const selectedBuff = spell.random_buffs[index];
-            if (selectedBuff && selectedBuff.type === 'buff' && selectedBuff.stat === 'maxHp' && selectedBuff.value > 0) {
-                target.hp = Math.min(target.maxHp + selectedBuff.value, target.hp + selectedBuff.value);
+            if (selectedBuff && selectedBuff.type === 'buff' && selectedBuff.value > 0) {
+                if (selectedBuff.stat === 'maxHp') target.hp = Math.min(target.maxHp + selectedBuff.value, target.hp + selectedBuff.value);
+                else if (selectedBuff.stat === 'pm') target.pm = Math.min(target.maxPm + selectedBuff.value, target.pm + selectedBuff.value);
             }
         }
 
@@ -675,14 +690,21 @@ export function resolveSpell(snapshot, action, rng) {
                 events.push({ type: 'secondaryMovement', targetId, kind: spell.move_direction_2, moved: r.moved });
             }
         } else if (spell.effect_type_2 === 'pm_regen') {
-            // pm_regen — combat.js l.9097-9100. Restaure des PM au LANCEUR. Les PM ne
-            // sont pas portés par newState → la coquille applique ae.pm en rejouant.
+            // pm_regen — combat.js l.8400-8405. Restaure des PM au LANCEUR. Porté par
+            // newState (caster.pm) ; la coquille ne refait plus le bump.
             events.push({ type: 'secondaryPmRegen', casterId });
+            caster.pm = Math.min(caster.maxPm || caster.pm, caster.pm + (spell.value_2 || 1));
         } else if (spell.effect_type_2) {
-            // Effet secondaire buff/debuff/DoT/heal_over_time/control — combat.js
-            // l.9050-9132. Aucun tirage RNG ; addEffect + ajusts PM (via getActualStats,
-            // impurs) rejoués par la coquille, qui reconstruit effect2 (lignes copiées).
+            // Effet secondaire buff/debuff/DoT/heal_over_time/control — combat.js l.8408-8453.
+            // Aucun tirage RNG ; addEffect rejoué par la coquille. Le bump/clamp PM d'un
+            // buff/debuff stat_2=pm est porté par newState (parité l.8443-8452).
             events.push({ type: 'secondarySpellEffect', targetId });
+            if (spell.effect_type_2 === 'buff' && spell.stat_2 === 'pm' && spell.value_2 > 0) {
+                target.pm = Math.min(target.maxPm + spell.value_2, target.pm + spell.value_2);
+            } else if (spell.effect_type_2 === 'debuff' && spell.stat_2 === 'pm' && spell.value_2 < 0) {
+                const newMaxPm = target.maxPm + spell.value_2;
+                if (target.pm > newMaxPm) target.pm = newMaxPm;
+            }
         }
 
         // 2sexies. Drain / vol de vie (TRANCHE 3.b.4) — combat.js l.8737-8742. Le
