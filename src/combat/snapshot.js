@@ -15,10 +15,11 @@
 //    IGNORÉS côté serveur tant qu'on ne l'ajoute pas à la sérialisation.
 //  - isWildWeakVillageMon : absent → attackerIsWildWeak=false (nerf début de jeu non
 //    reproduit serveur → écart possible sur sauvages faibles).
-//  - terrain (combatMap.isWalkable) : seules width/height/offset sont sérialisées →
-//    blockedTerrain VIDE. OK pour les sorts NON-mouvement (le shadow castSpell vise
-//    d'abord dégâts/effets) ; à enrichir pour le mouvement.
 //  - isPvpOpponent : absent → undefined (sans impact pour PVM).
+//
+// ✅ RÉSOLU : terrain (cases bloquées) désormais sérialisé via combatState.blockedTerrain
+//    (captureCombatShadowState l'échantillonne comme buildSpellSnapshot) → walkability
+//    serveur correcte pour le mouvement autoritatif (push/pull contre obstacle).
 // =============================================================================
 
 import { getActualStats } from "./engine/combat_stats.js";
@@ -48,8 +49,12 @@ export function buildSnapshotFromState(combatState) {
         (combatState.dungeonInfo && (combatState.dungeonInfo.type || combatState.dungeonInfo.isChampionsTower))
     );
 
-    // ⚠️ terrain non sérialisé → vide (suffisant pour les sorts non-mouvement).
-    const blockedTerrain = new Set();
+    // Terrain bloqué : reconstruit depuis la liste sérialisée (captureCombatShadowState
+    // l'échantillonne comme buildSpellSnapshot client) → walkability serveur pour le
+    // mouvement autoritatif. Vide si absent (rétro-compat / sorts non-mouvement).
+    const blockedTerrain = new Set(
+        Array.isArray(combatState.blockedTerrain) ? combatState.blockedTerrain : []
+    );
 
     // ctx commun de résolution de stats. heroStats=null (équipement déjà dans baseStats).
     // entities = la liste (pour les passifs ; passiveEffect doit être présent sinon ignoré).

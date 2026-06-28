@@ -107,3 +107,19 @@ test("shadow — liste vide / invalide = no-op", () => {
   assert.deepEqual(runShadowComparison([]), { casts: 0, matched: 0, mismatched: 0 });
   assert.deepEqual(runShadowComparison(null), { casts: 0, matched: 0, mismatched: 0 });
 });
+
+test("snapshot — blockedTerrain sérialisé est honoré (walkability serveur)", () => {
+  const cs = makeBefore();
+  cs.blockedTerrain = ["9,10", "9,11"];
+  const snap = buildSnapshotFromState(cs);
+  assert.ok(snap.blockedTerrain instanceof Set, "blockedTerrain reconstruit en Set");
+  assert.equal(snap.blockedTerrain.has("9,10"), true);
+  assert.equal(snap.blockedTerrain.has("9,11"), true);
+  assert.equal(snap.blockedTerrain.has("5,5"), false);
+});
+
+test("snapshot — sans blockedTerrain → Set vide (rétro-compat)", () => {
+  const snap = buildSnapshotFromState(makeBefore());
+  assert.ok(snap.blockedTerrain instanceof Set);
+  assert.equal(snap.blockedTerrain.size, 0);
+});
