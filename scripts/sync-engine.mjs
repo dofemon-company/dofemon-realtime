@@ -20,7 +20,7 @@ const DOFEMON = process.argv[2] || join(SERVER_ROOT, "..", "DOFEMON");
 const SRC = join(DOFEMON, "js");
 const DST = join(SERVER_ROOT, "src", "combat", "engine");
 
-const PURE_FILES = ["combat_geometry.js", "combat_engine.js", "combat_stats.js"];
+const PURE_FILES = ["combat_geometry.js", "combat_engine.js", "combat_stats.js", "combat_ai.js"];
 
 if (!existsSync(SRC)) {
     console.error(`[sync-engine] Introuvable: ${SRC}\nPasser le chemin du repo DOFEMON en argument.`);
