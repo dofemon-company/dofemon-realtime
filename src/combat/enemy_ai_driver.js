@@ -147,9 +147,44 @@ function makePredicates(geo, entities) {
   return { isWalkable, hasLoS, isObstacleTile, isChargePathClear, hasCover, reachable };
 }
 
-// Case de cast (cf. règle validée sur les logs).
+// Case de cast générique (heal/buff/debuff/CTRL) : range 0 → lanceur, sinon → cible.
 function castTileFor(spell, ae, target) {
   if (spell.range === 0) return { x: ae.x, y: ae.y };
+  return { x: target.x, y: target.y };
+}
+
+// Case de cast pour les sorts de ZONE avec range>0 (cône/ligne/circulaire) — réplique
+// VERBATIM de combat_utils.getCastTileForAreaSpell. La case visée est à castRange du
+// lanceur EN DIRECTION de la cible (pas la case de la cible) pour que la zone la touche.
+// Pure (lit attacker.effects pour le bonus de portée).
+function getCastTileForAreaSpell(attacker, target, spell) {
+  if (!spell.area || !(spell.range > 0)) return { x: target.x, y: target.y };
+  const baseRange = spell.range || 0;
+  let castRange = baseRange;
+  if (!spell.fixedRange && attacker && attacker.effects) {
+    let rangeBonus = 0;
+    attacker.effects.forEach((e) => {
+      if ((e.type === "buff" || e.type === "debuff") && e.stat === "range") rangeBonus += e.value;
+    });
+    castRange = Math.max(1, baseRange + rangeBonus);
+  }
+  const dx = target.x - attacker.x;
+  const dy = target.y - attacker.y;
+  const dist = Math.abs(dx) + Math.abs(dy);
+  if (dist <= 0) return { x: attacker.x, y: attacker.y };
+  const stepX = (dx !== 0 ? (dx > 0 ? 1 : -1) : 0) * Math.min(castRange, Math.abs(dx));
+  const remaining = castRange - Math.min(castRange, Math.abs(dx));
+  const stepY = (dy !== 0 ? (dy > 0 ? 1 : -1) : 0) * Math.min(remaining, Math.abs(dy));
+  return { x: attacker.x + stepX, y: attacker.y + stepY };
+}
+
+// Case de cast d'une ATTAQUE — réplique le bloc de tryToAttack (combat.js l.~12313) :
+// range 0 → lanceur ; zone (aoe_size>0) → getCastTileForAreaSpell ; sinon → cible.
+// (La branche s.id==='assault' du client est morte : le sort brut n'a pas d'`id` →
+//  ignorée ici aussi pour rester byte-identique.)
+function attackCastTile(spell, ae, target) {
+  if (spell.range === 0) return { x: ae.x, y: ae.y };
+  if (spell.area && (spell.aoe_size || 0) > 0) return getCastTileForAreaSpell(ae, target, spell);
   return { x: target.x, y: target.y };
 }
 
@@ -442,7 +477,7 @@ function tryToAttack(ae, target, entities, geo, emitCast) {
   });
   if (attackSpells.length === 0) return false;
   const { spell, key } = attackSpells[0];
-  emitCast(spell, key, castTileFor(spell, ae, target));
+  emitCast(spell, key, attackCastTile(spell, ae, target));
   return true;
 }
 
@@ -473,7 +508,8 @@ function tryToDebuff(ae, target, entities, geo, emitCast) {
   const debuffSpells = selectDebuffSpells(ae, target, { getSpell, hasLoS: preds.hasLoS });
   if (debuffSpells.length === 0) return false;
   const { spell, key } = debuffSpells[0];
-  emitCast(spell, key, castTileFor(spell, ae, target));
+  // Client tryToDebuff : executeAction(target.x, target.y) — toujours la case cible.
+  emitCast(spell, key, { x: target.x, y: target.y });
   return true;
 }
 
@@ -496,7 +532,8 @@ function tryPriorityOffensive(ae, target, spellKey, entities, geo, emitCast, emi
   const effectiveRange = getEffectiveSpellRange(spell, ae);
   const dist = Math.abs(ae.x - target.x) + Math.abs(ae.y - target.y);
   if (dist <= effectiveRange) {
-    emitCast(spell, spellKey, castTileFor(spell, ae, target));
+    // Client tryPriorityOffensiveSpellWild : executeAction(target.x, target.y).
+    emitCast(spell, spellKey, { x: target.x, y: target.y });
     return true;
   }
   if (ae.pm > 0) {
@@ -507,7 +544,7 @@ function tryPriorityOffensive(ae, target, spellKey, entities, geo, emitCast, emi
       emitMove(bestTile);
       // Après le déplacement, lancer le CTRL si toujours valide (cf. callback client).
       if (!hasControlEffect(target, spell.control_effect) && !(ae.spellCooldowns && ae.spellCooldowns[spellKey] > 0)) {
-        emitCast(spell, spellKey, castTileFor(spell, ae, target));
+        emitCast(spell, spellKey, { x: target.x, y: target.y });
       }
       return true;
     }

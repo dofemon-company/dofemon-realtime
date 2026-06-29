@@ -83,6 +83,18 @@ test("ennemi mort/inexistant → endTurn sûr", () => {
   assert.deepEqual(types(r), ["endTurn"]);
 });
 
+test("sort de zone cône (dragon_breath) → case de cast EN DIRECTION (pas la cible)", () => {
+  // dragon_breath : range1, area cône aoe_size3 → portée effective 3. Lanceur (5,5),
+  // héros (8,5) même rangée, dist3 ≤ 3. La case de cast doit être à castRange(1) du
+  // lanceur vers la cible = (6,5), PAS la case du héros (8,5).
+  const before = makeBefore([hero(8, 5), enemy(5, 5, ["dragon_breath"], { pm: 3 })]);
+  const r = planEnemyTurn(before, { casterId: 1 });
+  assert.equal(r.actions[0].type, "cast");
+  assert.equal(r.actions[0].spellKey, "dragon_breath");
+  assert.equal(r.actions[0].targetX, 6);
+  assert.equal(r.actions[0].targetY, 5);
+});
+
 test("boss à portée → attaque le héros", () => {
   const before = makeBefore([hero(5, 5), enemy(6, 5, ["strike", "bubble"], { isBoss: true, pm: 3 })]);
   const r = planEnemyTurn(before, { casterId: 1, isBoss: true });
