@@ -49,12 +49,27 @@ export function buildSnapshotFromState(combatState) {
         (combatState.dungeonInfo && (combatState.dungeonInfo.type || combatState.dungeonInfo.isChampionsTower))
     );
 
-    // Terrain bloqué : reconstruit depuis la liste sérialisée (captureCombatShadowState
-    // l'échantillonne comme buildSpellSnapshot client) → walkability serveur pour le
-    // mouvement autoritatif. Vide si absent (rétro-compat / sorts non-mouvement).
-    const blockedTerrain = new Set(
-        Array.isArray(combatState.blockedTerrain) ? combatState.blockedTerrain : []
-    );
+    // Terrain bloqué. Deux sources possibles :
+    //  - SHADOW : `combatState.blockedTerrain` (captureCombatShadowState l'échantillonne
+    //    comme buildSpellSnapshot client) → liste "x,y".
+    //  - VRAI SAVE (flip S4) : pas de blockedTerrain mais `gameMap` 2D complet est sérialisé
+    //    (serializeCombatState) → on dérive les cases bloquées (gameMap[x][y]===1||2), même
+    //    règle que le repli de sampleBlockedTerrain client. (combatMap.isWalkable est une
+    //    FONCTION perdue au JSON → indisponible serveur ; gameMap est la source autoritative.)
+    // Évite de gonfler le save d'une liste redondante.
+    const blockedTerrain = new Set();
+    if (Array.isArray(combatState.blockedTerrain) && combatState.blockedTerrain.length > 0) {
+        for (const key of combatState.blockedTerrain) blockedTerrain.add(key);
+    } else if (Array.isArray(combatState.gameMap)) {
+        const gm = combatState.gameMap;
+        for (let x = 0; x < gm.length; x++) {
+            const col = gm[x];
+            if (!col) continue;
+            for (let y = 0; y < col.length; y++) {
+                if (col[y] === 1 || col[y] === 2) blockedTerrain.add(`${x},${y}`);
+            }
+        }
+    }
 
     // ctx commun de résolution de stats. heroStats=null (équipement déjà dans baseStats).
     // entities = la liste (pour les passifs ; passiveEffect doit être présent sinon ignoré).

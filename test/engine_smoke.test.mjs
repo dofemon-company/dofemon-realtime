@@ -70,6 +70,28 @@ test("S0+S1 — résolution autoritaire d'un sort de dégât (ciblage + résolut
     assert.ok(r.events.some((e) => e.type === "damage"), "event damage émis");
 });
 
+test("S1 — blockedTerrain dérivé de gameMap quand le champ dédié est absent (vrai save / flip)", () => {
+    const cs = makeCombatState();
+    // Pas de blockedTerrain (vrai save) mais gameMap 2D : (1,2)=mur(1), (3,4)=trou(2), reste libre.
+    cs.gameMap = [];
+    for (let x = 0; x < 5; x++) { cs.gameMap[x] = []; for (let y = 0; y < 5; y++) cs.gameMap[x][y] = 0; }
+    cs.gameMap[1][2] = 1;
+    cs.gameMap[3][4] = 2;
+    const snap = buildSnapshotFromState(cs);
+    assert.ok(snap.blockedTerrain.has("1,2"), "mur dérivé");
+    assert.ok(snap.blockedTerrain.has("3,4"), "trou dérivé");
+    assert.ok(!snap.blockedTerrain.has("0,0"), "case libre non bloquée");
+});
+
+test("S1 — blockedTerrain explicite (shadow) prioritaire sur gameMap", () => {
+    const cs = makeCombatState();
+    cs.blockedTerrain = ["7,7"];
+    cs.gameMap = [[], []]; cs.gameMap[1] = []; cs.gameMap[1][1] = 1; // ne doit PAS être utilisé
+    const snap = buildSnapshotFromState(cs);
+    assert.ok(snap.blockedTerrain.has("7,7"));
+    assert.ok(!snap.blockedTerrain.has("1,1"), "gameMap ignoré quand blockedTerrain fourni");
+});
+
 test("S1 — snapshot sans combatMap → mapBounds null (repli 20×20 du moteur)", () => {
     const cs = makeCombatState();
     cs.combatMap = null;
