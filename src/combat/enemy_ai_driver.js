@@ -65,6 +65,11 @@ function isCasterMoving(spell, spellKey) {
   return false;
 }
 
+// Variante par clé seule (pour le comparateur shadow qui n'a que spellKey).
+export function castMovesCaster(spellKey) {
+  return isCasterMoving(SPELLS[spellKey], spellKey);
+}
+
 const getSpell = (k) => SPELLS[k];
 function hasControlEffect(entity, controlType) {
   if (!entity) return false;

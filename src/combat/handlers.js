@@ -11,7 +11,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { fastForwardCombat } from "./simulation.js";
 import { runShadowComparison } from "./shadow.js";
-import { logShadowAITurns } from "./shadow_ai.js";
+import { runShadowAIComparison } from "./shadow_ai.js";
 
 const TURN_DURATION_MS = 20000; // 20 s par tour (heros/allie)
 
@@ -191,12 +191,12 @@ export async function actionHandler(req, res) {
       console.warn("[shadow] comparaison ignorée:", e && e.message);
     }
 
-    // SHADOW IA (2b.4) : log des séquences d'actions des tours ennemis observés
-    // (collecte de vérité terrain pour decideNextEnemyAction). 100% passif.
+    // SHADOW IA (2b.4) : rejeu du driver planEnemyTurn + COMPARAISON à la séquence
+    // d'actions réelle de chaque tour ennemi. 100% passif (log seul). Jamais bloquant.
     try {
-      logShadowAITurns(shadowAITurns, { addr: solanaAddress, action });
+      runShadowAIComparison(shadowAITurns, { addr: solanaAddress, action });
     } catch (e) {
-      console.warn("[shadow-ai] log ignoré:", e && e.message);
+      console.warn("[shadow-ai] comparaison ignorée:", e && e.message);
     }
 
     const { data: existingSave, error: fetchError } = await supabase
