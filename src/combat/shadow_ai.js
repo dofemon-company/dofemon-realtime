@@ -15,6 +15,30 @@
 // =============================================================================
 
 import { planEnemyTurn, castMovesCaster } from "./enemy_ai_driver.js";
+import { SPELLS } from "./engine/spells_data.js";
+
+// DIAGNOSTIC (temporaire S3 IA) : dump compact de l'état du lanceur au tour d'écart,
+// pour comprendre pourquoi le driver diverge (cooldowns ? hp/maxHp ? sort filtré ?).
+function diagCaster(before, casterId) {
+  try {
+    const ae = (before.entities || [])[casterId];
+    if (!ae) return "caster=∅";
+    const cd = ae.spellCooldowns || {};
+    const spells = (ae.spells || [])
+      .map((k) => {
+        const s = SPELLS[k];
+        const left = cd[k] || 0;
+        return `${k}{cd${s ? s.cooldown || 0 : "?"}/left${left},dmg${s ? s.damage || 0 : "?"},r${s ? s.range : "?"}${s && s.effect_type ? "," + s.effect_type : ""}}`;
+      })
+      .join(" ");
+    const eff = (ae.effects || [])
+      .map((e) => `${e.type}${e.stat ? ":" + e.stat : ""}${e.control_effect ? ":" + e.control_effect : ""}(d${e.duration})`)
+      .join(",");
+    return `caster hp=${ae.hp}/${ae.maxHp} pm=${ae.pm} eff=[${eff}] spells=[${spells}]`;
+  } catch (e) {
+    return "diag-err:" + (e && e.message);
+  }
+}
 
 // Représentation compacte d'une action pour le log.
 function fmtAction(a) {
@@ -86,7 +110,8 @@ export function runShadowAIComparison(aiTurns, meta = {}) {
           `${tag} ÉCART turn#${i} caster=${turn.casterId} boss=${!!turn.isBoss}` +
             ` div@${divergence.index} plan=${divergence.planned} client=${divergence.recorded}` +
             ` | plan=[${planned.map(fmtAction).join(", ")}]` +
-            ` client=[${recorded.map(fmtAction).join(", ")}]`
+            ` client=[${recorded.map(fmtAction).join(", ")}]` +
+            ` | ${diagCaster(turn.before, turn.casterId)}`
         );
       } else {
         console.log(
