@@ -11,6 +11,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { fastForwardCombat } from "./simulation.js";
 import { runShadowComparison } from "./shadow.js";
+import { logShadowAITurns } from "./shadow_ai.js";
 
 const TURN_DURATION_MS = 20000; // 20 s par tour (heros/allie)
 
@@ -177,7 +178,7 @@ export async function actionHandler(req, res) {
     const solanaAddress = await resolveSolanaAddress(req, res, supabase);
     if (!solanaAddress) return;
 
-    const { action, combatState: clientCombatState, shadowCasts } = req.body || {};
+    const { action, combatState: clientCombatState, shadowCasts, shadowAITurns } = req.body || {};
     if (!clientCombatState) {
       return res.status(400).json({ error: "combatState is required" });
     }
@@ -188,6 +189,14 @@ export async function actionHandler(req, res) {
       runShadowComparison(shadowCasts, { addr: solanaAddress, action });
     } catch (e) {
       console.warn("[shadow] comparaison ignorée:", e && e.message);
+    }
+
+    // SHADOW IA (2b.4) : log des séquences d'actions des tours ennemis observés
+    // (collecte de vérité terrain pour decideNextEnemyAction). 100% passif.
+    try {
+      logShadowAITurns(shadowAITurns, { addr: solanaAddress, action });
+    } catch (e) {
+      console.warn("[shadow-ai] log ignoré:", e && e.message);
     }
 
     const { data: existingSave, error: fetchError } = await supabase
