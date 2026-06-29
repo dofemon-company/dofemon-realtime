@@ -32,6 +32,8 @@ import {
   computeReachableTiles,
   computeLineOfSight,
   computeChargePathClear,
+  computeAssaultLandingTile,
+  computeChargeLandingTile,
 } from "./engine/combat_geometry.js";
 import {
   selectClosestTargets,
@@ -147,6 +149,28 @@ function makePredicates(geo, entities) {
   return { isWalkable, hasLoS, isObstacleTile, isChargePathClear, hasCover, reachable };
 }
 
+// Case d'atterrissage d'un sort de mouvement primaire (charge/assault), via les helpers
+// purs de combat_geometry. `tile` = case de cast émise (== targetX/Y passé au client).
+// Renvoie {valid,x,y} ou null si le sort n'est pas couvert (ex. teleport_self).
+function computeCasterLanding(ae, spell, spellKey, tile, geo, entities, before) {
+  const preds = makePredicates(geo, entities);
+  if (spellKey === "charge" || (spell && spell.id === "charge")) {
+    return computeChargeLandingTile(ae, tile.x, tile.y, spell, {
+      mapBounds: geo.mapBounds,
+      isWalkable: preds.isWalkable,
+      isChargePathClear: (x1, y1, x2, y2) => preds.isChargePathClear(x1, y1, x2, y2, ae),
+      isPvp: !!(before && before.isPvp),
+    });
+  }
+  if (spellKey === "assault" || (spell && spell.id === "assault")) {
+    return computeAssaultLandingTile(ae, tile.x, tile.y, {
+      mapBounds: geo.mapBounds,
+      isWalkable: preds.isWalkable,
+    });
+  }
+  return null; // teleport_self / autre : position post-cast non couverte.
+}
+
 // Case de cast générique (heal/buff/debuff/CTRL) : range 0 → lanceur, sinon → cible.
 function castTileFor(spell, ae, target) {
   if (spell.range === 0) return { x: ae.x, y: ae.y };
@@ -217,8 +241,20 @@ export function planEnemyTurn(before, options = {}) {
         ae.spellCooldowns[spellKey] = spell.cooldown;
       }
       if (isCasterMoving(spell, spellKey)) {
-        out.suffixUncertain = true;
-        out.notes.push(`mouvement primaire (${spellKey}) → position post-cast inconnue`);
+        // Mouvement primaire : calculer la case d'atterrissage (helpers purs) pour
+        // CONNAÎTRE la position post-cast et pouvoir valider le SUFFIXE du tour.
+        // Si le calcul échoue (le client aurait annulé le sort — mais comme il a
+        // ENREGISTRÉ ce cast, c'est qu'il était valide → divergence) on retombe
+        // prudemment sur suffixUncertain (on ne valide alors que le préfixe).
+        const landing = computeCasterLanding(ae, spell, spellKey, tile, geo, entities, before);
+        if (landing && landing.valid) {
+          ae.x = landing.x;
+          ae.y = landing.y;
+          // NB : charge/assault ne consomment PAS de PM (le mouvement EST l'effet du sort).
+        } else {
+          out.suffixUncertain = true;
+          out.notes.push(`mouvement primaire (${spellKey}) → position post-cast inconnue`);
+        }
       }
     };
     const emitMove = (tile) => {

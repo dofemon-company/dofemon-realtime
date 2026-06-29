@@ -574,3 +574,116 @@ export function computeChargePathClear(x1, y1, x2, y2, ctx) {
     }
     return true;
 }
+
+// =============================================================================
+// MOUVEMENT PRIMAIRE — cases d'atterrissage (Phase 2b.4 / FLIP S4 étape a)
+// =============================================================================
+// Helpers PURS calculant la case d'arrivée des sorts qui DÉPLACENT le lanceur
+// (mouvement primaire, aujourd'hui inline dans startSpellAnimation). Extraits ici
+// pour permettre au moteur/serveur de connaître la position post-cast (lève le
+// `suffixUncertain` du driver IA). INERTES tant que combat.js ne les appelle pas.
+
+/**
+ * Case d'atterrissage du sort « assault » (le lanceur se téléporte sur/près de la
+ * case visée), PURE. Réplique fidèle de combat.js startSpellAnimation (l.5794-5828) :
+ *   - case visée si walkable ;
+ *   - sinon, voisin orthogonal libre — ordre [haut, bas, gauche, droite] — le PLUS
+ *     PROCHE (distance de Manhattan) du lanceur ; départage par cet ordre via un tri
+ *     STABLE (Array.prototype.sort l'est depuis ES2019, comme le client) ;
+ *   - aucun voisin libre → invalide (le client annule alors le sort).
+ * Parties impures injectées par `ctx` :
+ *   - mapBounds : bornes (isInCombatZone des voisins, comme le client).
+ *   - isWalkable(x, y) : walkability complète (zone + terrain + occupation), déjà
+ *     résolue par l'appelant — MÊME prédicat que le client (isWalkable).
+ *
+ * @param {{x:number, y:number}} attacker
+ * @param {number} targetX
+ * @param {number} targetY
+ * @param {{mapBounds:?object, isWalkable:(x:number,y:number)=>boolean}} ctx
+ * @returns {{valid:boolean, x?:number, y?:number}}
+ */
+export function computeAssaultLandingTile(attacker, targetX, targetY, ctx) {
+    const { mapBounds, isWalkable } = ctx;
+    let destX = targetX, destY = targetY;
+    if (!isWalkable(destX, destY)) {
+        const neighbors = [
+            { x: targetX, y: targetY - 1 },
+            { x: targetX, y: targetY + 1 },
+            { x: targetX - 1, y: targetY },
+            { x: targetX + 1, y: targetY }
+        ].filter(p => isInCombatZone(p.x, p.y, mapBounds) && isWalkable(p.x, p.y));
+        neighbors.forEach(p => { p.distance = Math.abs(p.x - attacker.x) + Math.abs(p.y - attacker.y); });
+        neighbors.sort((a, b) => a.distance - b.distance);
+        if (neighbors.length > 0) {
+            destX = neighbors[0].x;
+            destY = neighbors[0].y;
+        } else {
+            return { valid: false };
+        }
+    }
+    return { valid: true, x: destX, y: destY };
+}
+
+/**
+ * Case d'atterrissage du sort « charge » (le lanceur fonce d'UNE case vers la cible),
+ * PURE. Réplique fidèle de la branche de CALCUL non-PVP de combat.js startSpellAnimation
+ * (l.5856-5946). Reproduit toutes les invalidations sous forme `{valid:false, reason}` :
+ *   - lanceur ennemi en PvE visant en diagonale → invalide (`diagonal`) ;
+ *   - cible non alignée en croix (range) → invalide (`not_aligned`) ;
+ *   - chemin non dégagé (isChargePathClear) → invalide (`path_blocked`) ;
+ *   - case d'atterrissage hors-zone ou non walkable → invalide (`destination_blocked`).
+ * Sinon `{valid:true, x, y}` : (x,y) = case du lanceur + UNE case vers la cible si
+ * `chargeDist>1`, ou la case actuelle inchangée si `chargeDist<=1` (pas de mouvement).
+ * NB : la branche PVP-récepteur (destination transmise `_pvpChargeTarget*`) n'est PAS
+ * une décision → hors périmètre (le moteur/serveur PVM calcule lui-même).
+ * Parties impures injectées par `ctx` :
+ *   - mapBounds : bornes (isInCombatZone de la case d'atterrissage).
+ *   - isWalkable(x, y) : walkability complète de la case d'atterrissage (même prédicat client).
+ *   - isChargePathClear(x1,y1,x2,y2) : chemin dégagé (computeChargePathClear pré-lié aux
+ *     entités + terrain + lanceur).
+ *   - isPvp : booléen (la garde diagonale stricte ne s'applique qu'en PvE).
+ *
+ * @param {{x:number, y:number, type?:string}} attacker
+ * @param {number} targetX @param {number} targetY
+ * @param {object} spell - utilise `spell.range`.
+ * @param {{mapBounds:?object, isWalkable:Function, isChargePathClear:Function, isPvp:boolean}} ctx
+ * @returns {{valid:boolean, x?:number, y?:number, reason?:string}}
+ */
+export function computeChargeLandingTile(attacker, targetX, targetY, spell, ctx) {
+    const { mapBounds, isWalkable, isChargePathClear, isPvp } = ctx;
+    const dx = targetX - attacker.x;
+    const dy = targetY - attacker.y;
+
+    // IA (PvE uniquement) : jamais de diagonale.
+    if (attacker.type === 'enemy' && !isPvp) {
+        if (dx !== 0 && dy !== 0) return { valid: false, reason: 'diagonal' };
+    }
+
+    const isInCross = (dx === 0 && Math.abs(dy) <= spell.range) || (dy === 0 && Math.abs(dx) <= spell.range);
+    const pathClear = isChargePathClear(attacker.x, attacker.y, targetX, targetY);
+
+    if (!isInCross || !pathClear) {
+        return { valid: false, reason: !isInCross ? 'not_aligned' : 'path_blocked' };
+    }
+
+    const chargeDist = Math.abs(dx) + Math.abs(dy);
+    if (chargeDist > 1) {
+        let chargeX = attacker.x;
+        let chargeY = attacker.y;
+        if (Math.abs(dx) > Math.abs(dy)) {
+            chargeX += dx > 0 ? 1 : -1;
+        } else if (Math.abs(dy) > 0) {
+            chargeY += dy > 0 ? 1 : -1;
+        } else if (dx !== 0) {
+            chargeX += dx > 0 ? 1 : -1;
+        } else if (dy !== 0) {
+            chargeY += dy > 0 ? 1 : -1;
+        }
+        if (isInCombatZone(chargeX, chargeY, mapBounds) && isWalkable(chargeX, chargeY)) {
+            return { valid: true, x: chargeX, y: chargeY };
+        }
+        return { valid: false, reason: 'destination_blocked' };
+    }
+    // chargeDist <= 1 : pas de mouvement, le lanceur reste sur place.
+    return { valid: true, x: attacker.x, y: attacker.y };
+}

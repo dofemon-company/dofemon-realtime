@@ -69,12 +69,24 @@ test("self-buff prioritaire → cast à la position du lanceur puis approche", (
   assert.equal(r.actions[1].type, "move"); // continueEnemyAI → approche
 });
 
-test("mouvement primaire (charge) → suffixUncertain", () => {
+test("mouvement primaire (charge) → atterrissage calculé (suffixe certain)", () => {
   const before = makeBefore([hero(5, 5), enemy(7, 5, ["charge"], { pm: 2 })]);
   const r = planEnemyTurn(before, { casterId: 1 });
   assert.equal(r.actions[0].type, "cast");
   assert.equal(r.actions[0].spellKey, "charge");
-  assert.equal(r.suffixUncertain, true);
+  // La case d'atterrissage est désormais calculée (computeChargeLandingTile) → la
+  // position post-cast est connue → le suffixe du tour est fiable (plus de PARTIAL).
+  assert.equal(r.suffixUncertain, false);
+});
+
+test("mouvement primaire (assault) → atterrissage calculé (suffixe certain)", () => {
+  // assault (téléportation adjacente) : case visée occupée par le héros → atterrit sur
+  // le voisin libre le plus proche (computeAssaultLandingTile) → suffixe fiable.
+  const before = makeBefore([hero(5, 5), enemy(9, 5, ["assault"], { pm: 0 })]);
+  const r = planEnemyTurn(before, { casterId: 1 });
+  assert.equal(r.actions[0].type, "cast");
+  assert.equal(r.actions[0].spellKey, "assault");
+  assert.equal(r.suffixUncertain, false);
 });
 
 test("ennemi mort/inexistant → endTurn sûr", () => {

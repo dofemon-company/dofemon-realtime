@@ -77,13 +77,21 @@ test("runShadowAIComparison — séquence falsifiée = MISMATCH", () => {
   assert.equal(r.mismatched, 1);
 });
 
-test("runShadowAIComparison — mouvement primaire (charge) = PARTIAL", () => {
+test("runShadowAIComparison — charge (mouvement primaire) round-trip = MATCH", () => {
+  // La case d'atterrissage de charge est désormais calculée (computeChargeLandingTile)
+  // → la position post-cast est connue → le SUFFIXE (recul) est validé → MATCH complet
+  // (plus de PARTIAL pour charge sur terrain dégagé).
   const before = makeBeforeFor([he(5, 5), en(7, 5, ["charge"], { pm: 2 })]);
-  const turn = recordedTurnFrom(before, 1);
-  // Le client a aussi un suffixe (recul) après charge ; on simule un suffixe arbitraire
-  // → seul le préfixe jusqu'au cast charge est validé.
-  turn.actions.push({ type: "move", toX: 1, toY: 1 });
-  const r = runShadowAIComparison([turn], { addr: "ABC" });
-  assert.equal(r.partial, 1);
+  const r = runShadowAIComparison([recordedTurnFrom(before, 1)], { addr: "ABC" });
+  assert.equal(r.matched, 1);
+  assert.equal(r.partial, 0);
+  assert.equal(r.mismatched, 0);
+});
+
+test("runShadowAIComparison — assault (téléportation) round-trip = MATCH", () => {
+  // assault couvert par computeAssaultLandingTile → suffixe fiable → MATCH.
+  const before = makeBeforeFor([he(5, 5), en(9, 5, ["assault"], { pm: 0 })]);
+  const r = runShadowAIComparison([recordedTurnFrom(before, 1)], { addr: "ABC" });
+  assert.equal(r.matched, 1);
   assert.equal(r.mismatched, 0);
 });
