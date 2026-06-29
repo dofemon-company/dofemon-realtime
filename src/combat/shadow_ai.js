@@ -14,8 +14,24 @@
 // 100% passif : aucune écriture, aucun impact sur la réponse ni le stockage.
 // =============================================================================
 
-import { planEnemyTurn, castMovesCaster } from "./enemy_ai_driver.js";
+import { planEnemyTurn, castMovesCaster, diagnoseEnemyTurn } from "./enemy_ai_driver.js";
 import { SPELLS } from "./engine/spells_data.js";
+
+// DIAGNOSTIC géométrique (temporaire S3 IA) : faits décisifs du tour côté driver
+// (pm, zone, reachable, maxRange, dist, bestTile) pour élucider les écarts d'IA
+// (notamment le "buff au coin / client ∅" — voir phase2b_combat_engine_progress).
+function diagGeo(before, casterId, isBoss) {
+  try {
+    const d = diagnoseEnemyTurn(before, { casterId, isBoss: !!isBoss });
+    return (
+      `pos=${d.pos} pm=${d.pm} inZone=${d.inZone} paralyzed=${d.paralyzed}` +
+      ` reachable=${d.reachableCount} maxRange=${d.maxRange} nearestDist=${d.nearestDist}` +
+      ` bestTile=${d.bestTile} nTargets=${d.nTargets}${d.err ? " err=" + d.err : ""}`
+    );
+  } catch (e) {
+    return "diagGeo-err:" + (e && e.message);
+  }
+}
 
 // DIAGNOSTIC (temporaire S3 IA) : dump compact de l'état du lanceur au tour d'écart,
 // pour comprendre pourquoi le driver diverge (cooldowns ? hp/maxHp ? sort filtré ?).
@@ -111,7 +127,8 @@ export function runShadowAIComparison(aiTurns, meta = {}) {
             ` div@${divergence.index} plan=${divergence.planned} client=${divergence.recorded}` +
             ` | plan=[${planned.map(fmtAction).join(", ")}]` +
             ` client=[${recorded.map(fmtAction).join(", ")}]` +
-            ` | ${diagCaster(turn.before, turn.casterId)}`
+            ` | ${diagCaster(turn.before, turn.casterId)}` +
+            ` | ${diagGeo(turn.before, turn.casterId, turn.isBoss)}`
         );
       } else {
         console.log(

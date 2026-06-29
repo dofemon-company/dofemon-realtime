@@ -242,6 +242,50 @@ export function planEnemyTurn(before, options = {}) {
   }
 }
 
+/**
+ * DIAGNOSTIC (temporaire S3 IA) — recalcule les faits géométriques décisifs du tour
+ * pour comprendre une divergence driver↔client (ex. écart "buff au coin / client ∅").
+ * Réutilise EXACTEMENT le câblage de planNormalTurn (mêmes ctx/prédicats/leaves) afin
+ * que les valeurs reflètent ce que le driver a réellement "vu". Pur, sans exception.
+ * @param {object} before
+ * @param {{casterId:number, isBoss?:boolean}} options
+ * @returns {object} faits compacts (pos, pm, inZone, reachableCount, maxRange, nearestDist, bestTile…)
+ */
+export function diagnoseEnemyTurn(before, options = {}) {
+  const d = {};
+  try {
+    const entities = (before.entities || []).map((e) => ({ ...e, effects: (e.effects || []).map((x) => ({ ...x })) }));
+    const ae = entities[options.casterId];
+    if (!ae) return { err: "caster∅" };
+    const geo = buildGeoCtx(before);
+    const preds = makePredicates(geo, entities);
+    d.pos = `(${ae.x},${ae.y})`;
+    d.pm = ae.pm;
+    d.inZone = isInCombatZone(ae.x, ae.y, geo.mapBounds);
+    d.hasAttacked = !!ae.hasAttacked;
+    d.paralyzed = hasControlEffect(ae, "paralyzed");
+    const reachable = preds.reachable(ae);
+    d.reachableCount = reachable.length;
+    const td = selectClosestTargets(ae, entities);
+    d.nTargets = td.length;
+    if (td.length) {
+      const tgt = td[0].target;
+      d.nearestDist = td[0].dist;
+      d.maxRange = computeMaxAttackRange(ae, getSpell, { includeDebuff: !options.isBoss });
+      const retreatInfo = computeBestRetreatTile(ae, tgt, {
+        mapBounds: geo.mapBounds, isWalkable: preds.isWalkable, hasLoS: preds.hasLoS, reachableTiles: reachable,
+      });
+      const bestTile = selectMoveTile(ae, tgt, d.maxRange, {
+        reachableTiles: reachable, hasLoS: preds.hasLoS, getSpell, retreatInfo,
+      });
+      d.bestTile = bestTile ? `(${bestTile.x},${bestTile.y})c${bestTile.cost || 0}` : "∅";
+    }
+  } catch (e) {
+    d.err = e && e.message;
+  }
+  return d;
+}
+
 // ===========================================================================
 // IA normale — réplique continueNormalEnemyAI (combat.js l.11732).
 // ===========================================================================
