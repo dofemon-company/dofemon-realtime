@@ -373,6 +373,88 @@ export function slidePush(startX, startY, dirX, dirY, distance, mapBounds, isWal
 }
 
 /**
+ * Case d'arrivée d'une CIBLE tirée/poussée par un sort de mouvement primaire dont la
+ * direction dépend du LANCEUR (lasso/elasto_punch/grappling_hook/attraction = `toward`,
+ * home_run/dragon_tail/repulsion = `away`), PURE. Compose le kernel existant :
+ *   direction = computeSlideDirection(caster→target, moveDirection)
+ *   arrivée   = slidePush(target, direction, moveDistance)
+ * Réplique fidèle des blocs inline de combat.js startSpellAnimation (lasso l.6079,
+ * elasto_punch l.6163, grappling_hook l.6262, attraction l.6361 par cible, home_run
+ * l.6460, dragon_tail l.6639) : glissement case par case, arrêt à la 1re case hors-zone
+ * (isValidTile) ou non-walkable, AUCUN fallback (si bloqué dès la 1re case → reste sur
+ * place). NB : repelling_bomb (direction depuis la case de cast) et swap (échange de
+ * positions) ne suivent PAS ce schéma → helpers dédiés à part.
+ * `ctx` : { mapBounds, isWalkable } (mêmes prédicats que le client).
+ *
+ * @param {{x:number,y:number}} caster
+ * @param {{x:number,y:number}} target
+ * @param {'toward'|'away'} moveDirection
+ * @param {number} moveDistance
+ * @param {{mapBounds:?object, isWalkable:(x:number,y:number)=>boolean}} ctx
+ * @returns {{x:number, y:number, moved:number}}
+ */
+export function computeTargetSlideDestination(caster, target, moveDirection, moveDistance, ctx) {
+    const { dirX, dirY } = computeSlideDirection(caster.x, caster.y, target.x, target.y, moveDirection);
+    return slidePush(target.x, target.y, dirX, dirY, moveDistance, ctx.mapBounds, ctx.isWalkable);
+}
+
+/**
+ * Case d'arrivée d'une cible repoussée par « repelling_bomb » (bombe en zone), PURE.
+ * Réplique fidèle de combat.js startSpellAnimation (l.6556-6597) : la direction dépend
+ * de la case de CAST (cx, cy), pas du lanceur :
+ *   - cible SUR la case de cast → ne bouge pas ;
+ *   - cible à distance de Manhattan 1 de la case de cast → poussée dans la direction
+ *     (cible − case de cast) [vecteur cardinal unitaire], glissement slidePush ;
+ *   - sinon (ni sur la case, ni adjacente) → ne bouge pas.
+ * `ctx` : { mapBounds, isWalkable }.
+ *
+ * @param {{x:number,y:number}} target
+ * @param {number} castX @param {number} castY - case ciblée par le sort.
+ * @param {number} moveDistance
+ * @param {{mapBounds:?object, isWalkable:(x:number,y:number)=>boolean}} ctx
+ * @returns {{x:number, y:number, moved:number}}
+ */
+export function computeRepellingBombDestination(target, castX, castY, moveDistance, ctx) {
+    if (target.x === castX && target.y === castY) return { x: target.x, y: target.y, moved: 0 };
+    const manhattan = Math.abs(target.x - castX) + Math.abs(target.y - castY);
+    if (manhattan !== 1) return { x: target.x, y: target.y, moved: 0 };
+    const dirX = target.x - castX;
+    const dirY = target.y - castY;
+    return slidePush(target.x, target.y, dirX, dirY, moveDistance, ctx.mapBounds, ctx.isWalkable);
+}
+
+/**
+ * Case d'arrivée d'une cible balayée par « sweep » (cône, poussée en ligne), PURE.
+ * Réplique fidèle de combat.js startSpellAnimation (l.6897-6960) : la direction de
+ * poussée suit la LIGNE DE RÉFÉRENCE lanceur → case de cast (cx, cy), identique pour
+ * toutes les cibles (lignes parallèles) :
+ *   - ligne verticale (refDx === 0) → poussée verticale, dirY = signe(refDy) ;
+ *   - sinon ligne horizontale (refDy === 0) → poussée horizontale, dirX = signe(refDx) ;
+ *   - ligne diagonale (refDx ≠ 0 ET refDy ≠ 0) → pas de poussée (dir 0,0 → moved 0).
+ * (La distinction "cible sur la ligne de référence" du client ne change PAS la direction
+ *  — les deux branches sont identiques — donc omise ici sans impact.) Puis slidePush.
+ * `ctx` : { mapBounds, isWalkable }.
+ *
+ * @param {{x:number,y:number}} caster
+ * @param {number} castX @param {number} castY - case ciblée par le sort.
+ * @param {{x:number,y:number}} target
+ * @param {number} moveDistance
+ * @param {{mapBounds:?object, isWalkable:(x:number,y:number)=>boolean}} ctx
+ * @returns {{x:number, y:number, moved:number}}
+ */
+export function computeSweepPushDestination(caster, castX, castY, target, moveDistance, ctx) {
+    const refDx = castX - caster.x;
+    const refDy = castY - caster.y;
+    let dirX = 0, dirY = 0;
+    if (refDx === 0) {
+        dirY = refDy > 0 ? 1 : -1;
+    } else if (refDy === 0) {
+        dirX = refDx > 0 ? 1 : -1;
+    }
+    return slidePush(target.x, target.y, dirX, dirY, moveDistance, ctx.mapBounds, ctx.isWalkable);
+}
+
+/**
  * Cases accessibles par une entité (BFS limité par ses PM), PURE. Réplique fidèle de
  * combat_utils.calculateReachable (l.1366-1423) : BFS 4-directions, coût = distance,
  * inclut la case de départ (coût 0). L'ordre des cases est PRÉSERVÉ (FIFO + voisins

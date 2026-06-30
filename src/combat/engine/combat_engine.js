@@ -20,6 +20,12 @@ import {
     computeSlideDirection,
     slidePush,
     isTileWalkable,
+    computeChargeLandingTile,
+    computeAssaultLandingTile,
+    computeTargetSlideDestination,
+    computeRepellingBombDestination,
+    computeSweepPushDestination,
+    computeChargePathClear,
 } from './combat_geometry.js';
 
 /**
@@ -361,6 +367,157 @@ export function resolveSecondaryMovement(casterX, casterY, targetX, targetY, spe
     return { x: targetX, y: targetY, moved: 0, teleported: false };
 }
 
+// =============================================================================
+// MOUVEMENT PRIMAIRE (sorts qui DÉPLACENT le lanceur ou les cibles) — FLIP S4 (A1)
+// =============================================================================
+// Compose les helpers de destination déjà fuzz-prouvés (combat_geometry) pour
+// résoudre, côté moteur, le déplacement primaire d'un sort de mouvement, et émet
+// des events `primaryMovement` / `swap` / `movementCancelled` que la coquille
+// rejouera (tween PURE-VISUEL old→new ; le moteur fixe la destination autoritaire).
+//
+// ⚠️ INERTE tant que combat.js route ces sorts en legacy : `isEngineSpell`
+// (combat.js:~7977 + liste `special`) EXCLUT tout le mouvement primaire → resolveSpell
+// n'est JAMAIS appelé avec un sort de mouvement en prod → ce bloc ne s'exécute que
+// sous test. Le câblage se fera famille par famille (cf PLAN_FLIP_S4 §A : retrait du
+// legacy startSpellAnimation + tween visuel seul + levée de l'exclusion isEngineSpell).
+//
+// Familles (mêmes id que le dispatch startSpellAnimation de combat.js) :
+//   - caster-moving : charge (computeChargeLandingTile), assault (computeAssaultLandingTile) ;
+//   - teleport_self : jump / teleportation (lanceur → case visée) ;
+//   - swap          : échange lanceur ↔ cible unique ;
+//   - target-slide  : lasso/elasto_punch/grappling_hook/attraction (toward),
+//                     home_run/dragon_tail/repulsion/tiny_tail/deliverance (away)
+//                     → computeTargetSlideDestination(move_direction) ;
+//   - repelling_bomb (computeRepellingBombDestination), sweep (computeSweepPushDestination).
+//
+// ⭐ Parité d'occupation (AoE multi-cibles) : le client calcule TOUTES les destinations
+// dans startSpellAnimation AVANT d'appliquer les déplacements (moves async via setTimeout)
+// → chaque cible glisse contre l'occupation D'ORIGINE (aucune cible n'a encore bougé).
+// On le reproduit en deux temps : calcul de toutes les destinations sur les entités NON
+// mutées, PUIS application. Émis AVANT les dégâts (startSpellAnimation précède
+// continueSpellExecution) ; une charge/assault invalide ANNULE le sort (aucun dégât).
+
+const CASTER_LANDING_SPELLS = new Set(['charge', 'assault']);
+const TARGET_SLIDE_SPELLS = new Set([
+    'lasso', 'elasto_punch', 'grappling_hook', 'attraction',
+    'home_run', 'dragon_tail', 'repulsion', 'tiny_tail', 'deliverance',
+]);
+
+// @returns {{handled:boolean, cancelled?:boolean}} handled=false → sort non-mouvement
+//   (no-op, flux normal de resolveSpell). cancelled=true → mouvement annulé
+//   (charge/assault invalide) : resolveSpell s'arrête sans appliquer de dégât.
+function resolvePrimaryMovement(snapshot, action, entities, byId, events) {
+    const { spell, casterId, targetX, targetY } = action;
+    const id = spell.id;
+    const isTeleportSelf = spell.effect_type === 'movement' && spell.move_direction === 'teleport_self';
+    const isSwap = spell.effect_type === 'movement' && spell.move_direction === 'swap';
+    const isCasterLanding = CASTER_LANDING_SPELLS.has(id);
+    const isSlide = TARGET_SLIDE_SPELLS.has(id) || id === 'repelling_bomb' || id === 'sweep';
+
+    if (!isTeleportSelf && !isSwap && !isCasterLanding && !isSlide) {
+        return { handled: false };
+    }
+
+    const caster = byId(casterId);
+    if (!caster) return { handled: true };
+
+    const engineIsWalkable = (wx, wy) => isTileWalkable(wx, wy, {
+        mapBounds: snapshot.mapBounds,
+        statueActive: snapshot.statueActive,
+        isTerrainBlocked: (tx, ty) => snapshot.blockedTerrain.has(`${tx},${ty}`),
+        entities, // copie de travail (occupation d'origine : non mutée avant l'application)
+    });
+
+    // --- teleport_self (jump / teleportation) : lanceur → case visée — combat.js l.7906.
+    // teleport:true → la coquille fait un SNAP visuel (pas de glissement).
+    if (isTeleportSelf) {
+        if (targetX !== caster.x || targetY !== caster.y) {
+            events.push({ type: 'primaryMovement', entityId: casterId, fromX: caster.x, fromY: caster.y, toX: targetX, toY: targetY, teleport: true });
+            caster.x = targetX;
+            caster.y = targetY;
+        }
+        return { handled: true };
+    }
+
+    // --- swap : échange lanceur ↔ cible unique — combat.js l.9508.
+    if (isSwap) {
+        const targetId = (action.targetIds && action.targetIds[0]) ?? action.targetId;
+        const target = byId(targetId);
+        if (target) {
+            // Positions AVANT l'échange (la coquille en déduit les 2 tweens visuels :
+            // a glisse aFrom→bFrom, b glisse bFrom→aFrom).
+            const aFrom = { x: caster.x, y: caster.y };
+            const bFrom = { x: target.x, y: target.y };
+            events.push({ type: 'swap', aId: casterId, bId: targetId, aFrom, bFrom });
+            caster.x = bFrom.x; caster.y = bFrom.y;
+            target.x = aFrom.x; target.y = aFrom.y;
+        }
+        return { handled: true };
+    }
+
+    // --- caster-moving : charge / assault — combat.js startSpellAnimation l.5793/5846.
+    if (isCasterLanding) {
+        let landing;
+        if (id === 'assault') {
+            landing = computeAssaultLandingTile(caster, targetX, targetY, {
+                mapBounds: snapshot.mapBounds, isWalkable: engineIsWalkable,
+            });
+        } else { // charge
+            const isChargePathClear = (x1, y1, x2, y2) => computeChargePathClear(x1, y1, x2, y2, {
+                mapBounds: snapshot.mapBounds,
+                isTerrainBlocked: (tx, ty) => snapshot.blockedTerrain.has(`${tx},${ty}`),
+                entities,
+                sourceEntity: caster,
+            });
+            landing = computeChargeLandingTile(caster, targetX, targetY, spell, {
+                mapBounds: snapshot.mapBounds, isWalkable: engineIsWalkable,
+                isChargePathClear, isPvp: !!snapshot.isPvp,
+            });
+        }
+        if (!landing.valid) {
+            events.push({ type: 'movementCancelled', casterId, reason: landing.reason || 'no_space' });
+            return { handled: true, cancelled: true };
+        }
+        if (landing.x !== caster.x || landing.y !== caster.y) {
+            // assault = téléportation (snap visuel) ; charge = glissement (tween).
+            const teleport = id === 'assault';
+            events.push({ type: 'primaryMovement', entityId: casterId, fromX: caster.x, fromY: caster.y, toX: landing.x, toY: landing.y, teleport });
+            caster.x = landing.x;
+            caster.y = landing.y;
+        }
+        return { handled: true };
+    }
+
+    // --- target-slide (mono ou AoE) : calcul de TOUTES les destinations sur l'occupation
+    //     d'origine (entités non mutées), PUIS application — parité avec les moves async client.
+    const slideCtx = { mapBounds: snapshot.mapBounds, isWalkable: engineIsWalkable };
+    const ids = action.targetIds
+        || (action.targetX !== undefined ? resolveTargets(snapshot, action) : [action.targetId]);
+    const moveDistance = spell.move_distance;
+    const dests = [];
+    for (const tid of ids) {
+        const tgt = byId(tid);
+        if (!tgt) continue;
+        let dest;
+        if (id === 'repelling_bomb') {
+            dest = computeRepellingBombDestination(tgt, targetX, targetY, moveDistance, slideCtx);
+        } else if (id === 'sweep') {
+            dest = computeSweepPushDestination(caster, targetX, targetY, tgt, moveDistance, slideCtx);
+        } else {
+            dest = computeTargetSlideDestination(caster, tgt, spell.move_direction, moveDistance, slideCtx);
+        }
+        dests.push({ tid, x: dest.x, y: dest.y, moved: dest.moved });
+    }
+    for (const d of dests) {
+        const tgt = byId(d.tid);
+        if (!tgt || d.moved <= 0) continue;
+        events.push({ type: 'primaryMovement', entityId: d.tid, fromX: tgt.x, fromY: tgt.y, toX: d.x, toY: d.y, moved: d.moved });
+        tgt.x = d.x;
+        tgt.y = d.y;
+    }
+    return { handled: true };
+}
+
 export function resolveSpell(snapshot, action, rng) {
     const { spell, casterId } = action;
     // Cibles : liste explicite (compat coquille/ tests) ; sinon, le moteur les
@@ -377,6 +534,15 @@ export function resolveSpell(snapshot, action, rng) {
     const byId = id => entities.find(e => e.id === id);
 
     const caster = byId(casterId);
+
+    // Mouvement primaire (charge/assault/slides/swap/teleport_self) — résolu AVANT les
+    // dégâts (startSpellAnimation précède continueSpellExecution côté client). INERTE en
+    // prod (isEngineSpell exclut ces sorts → ne s'exécute que sous test). Une charge/assault
+    // invalide ANNULE le sort (aucun dégât appliqué), comme le client.
+    const moveResult = resolvePrimaryMovement(snapshot, action, entities, byId, events);
+    if (moveResult.cancelled) {
+        return { events, newState: { entities } };
+    }
 
     // Boucle multi-cibles (AoE = même bloc de dégâts répété). La mort est marquée au
     // fil de l'eau dans la copie de travail → les multiplicateurs de boost/défense par
