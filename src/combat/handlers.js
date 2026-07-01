@@ -12,6 +12,8 @@ import { createClient } from "@supabase/supabase-js";
 import { fastForwardCombat } from "./simulation.js";
 import { runShadowComparison } from "./shadow.js";
 import { runShadowAIComparison } from "./shadow_ai.js";
+import { resolveEnemyTurn } from "./enemy_turn.js";
+import { createRng, hashSeed } from "./engine/combat_engine.js";
 
 const TURN_DURATION_MS = 20000; // 20 s par tour (heros/allie)
 
@@ -407,6 +409,46 @@ export async function currentHandler(req, res) {
     });
   } catch (error) {
     console.error("[combat/current] erreur:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+// =========================================
+// POST /api/combat/enemy-turn  (Palier C — C2)
+// =========================================
+// Le SERVEUR joue+résout un tour d'ennemi PVM et renvoie la liste des STEPS
+// ({action, events?, newState?}) que le client anime/applique (le serveur tire les
+// dés, le client affiche — D3). Entrée : { before, casterId, isBoss }.
+//
+// ⚠️ ÉTAPE C : `before` est fourni par le CLIENT (comme le shadow) → l'autorité
+// anti-triche complète (le serveur résout depuis SON état stocké) viendra au Palier B
+// (persistance serveur). Ici la STRUCTURE (le serveur joue le tour ennemi) est posée ;
+// le shadow-ai a déjà prouvé que cette résolution = celle du client.
+//
+// Graine RNG DÉTERMINISTE dérivée de l'état (mêmes entrées → mêmes dés → idempotent
+// sur retry), non transmise (le client n'en a pas besoin en approche « vue pure »).
+export async function enemyTurnHandler(req, res) {
+  try {
+    const { before, casterId, isBoss } = req.body || {};
+    if (!before || !Array.isArray(before.entities) || casterId == null) {
+      return res.status(400).json({ error: "before (with entities) and casterId are required" });
+    }
+
+    // Graine déterministe : positions/hp des entités + casterId + tour (si présent).
+    const stateKey = (before.entities || [])
+      .map((e) => `${e.x},${e.y},${e.hp},${e.dead ? 1 : 0}`)
+      .join("|");
+    const seed = hashSeed(`${casterId}:${before.turnCount || 0}:${stateKey}`);
+    const rng = createRng(seed);
+
+    const result = resolveEnemyTurn(before, { casterId, isBoss: !!isBoss }, rng);
+    return res.status(200).json({
+      steps: result.steps,
+      suffixUncertain: result.suffixUncertain,
+      notes: result.notes,
+    });
+  } catch (error) {
+    console.error("[combat/enemy-turn] erreur:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 }
