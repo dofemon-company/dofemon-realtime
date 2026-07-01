@@ -43,6 +43,13 @@ function isUnhandledSpell(spell, key) {
     return false;
 }
 
+// Snapshot des champs d'état "durs" des entités de travail sous forme de newState (par
+// INDEX), pour les steps qui mutent l'état HORS resolveSpell (confusion auto-dégât,
+// cost_hp mortel) → le client (applySpellNewState) applique ces PV/mort.
+function workingToNewState(entities) {
+    return { entities: (entities || []).map((e) => ({ hp: e.hp, dead: e.dead, x: e.x, y: e.y, pm: e.pm, elemType: e.elemType })) };
+}
+
 function applyNewStateToWorking(entities, newState) {
     (newState.entities || []).forEach((ne, i) => {
         const e = entities[i];
@@ -115,7 +122,7 @@ export function resolveEnemyTurn(before, options = {}, rng) {
                         ae.hp -= selfDmg;
                         const evs = [{ type: "confusionFail", casterId, amount: selfDmg }];
                         if (ae.hp <= 0) { ae.dead = true; ae.hp = 0; evs.push({ type: "death", entityId: casterId, context: "confusion" }); }
-                        out.steps.push({ action, events: evs }); // attaque annulée par la confusion
+                        out.steps.push({ action, events: evs, newState: workingToNewState(working.entities) }); // attaque annulée
                         continue;
                     }
                     // sinon : le sort passe (le tirage a été consommé, comme le client).
@@ -130,7 +137,7 @@ export function resolveEnemyTurn(before, options = {}, rng) {
                     if (ae.hp <= 0) {
                         ae.dead = true; ae.hp = 0;
                         preEvents.push({ type: "death", entityId: casterId, context: "costHp" });
-                        out.steps.push({ action, events: preEvents }); // mort au coût → sort arrêté
+                        out.steps.push({ action, events: preEvents, newState: workingToNewState(working.entities) }); // mort au coût
                         continue;
                     }
                 }
