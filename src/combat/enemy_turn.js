@@ -76,6 +76,41 @@ export function resolveEnemyTurn(before, options = {}, rng) {
                     continue;
                 }
                 const spell = { ...raw, id: action.spellKey };
+                const ae = working.entities[casterId];
+
+                // --- Pré-résolution (réplique executeSpellLogic AVANT continueSpellExecution) ---
+                // 1) CONFUSION (combat.js l.7912) : 50% qu'un ennemi confus rate une attaque de
+                //    DÉGÂT → auto-dégât maxHp*0.10 + attaque ANNULÉE. Consomme 1 tirage TOUJOURS.
+                const isConfused = ae && (ae.effects || []).some(
+                    (e) => e.type === "control" && e.control_effect === "confused" && e.duration > 0,
+                );
+                if (isConfused && spell.damage > 0) {
+                    if (rng() < 0.5) {
+                        const selfDmg = Math.floor((ae.maxHp || 0) * 0.10);
+                        ae.hp -= selfDmg;
+                        const evs = [{ type: "confusionFail", casterId, amount: selfDmg }];
+                        if (ae.hp <= 0) { ae.dead = true; ae.hp = 0; evs.push({ type: "death", entityId: casterId, context: "confusion" }); }
+                        out.steps.push({ action, events: evs }); // attaque annulée par la confusion
+                        continue;
+                    }
+                    // sinon : le sort passe (le tirage a été consommé, comme le client).
+                }
+
+                // 2) cost_hp_percent (combat.js l.7958) : le lanceur perd des PV pour lancer.
+                const preEvents = [];
+                if (spell.cost_hp_percent && ae) {
+                    const cost = Math.floor((ae.maxHp || 0) * spell.cost_hp_percent);
+                    ae.hp -= cost;
+                    preEvents.push({ type: "costHp", casterId, amount: cost });
+                    if (ae.hp <= 0) {
+                        ae.dead = true; ae.hp = 0;
+                        preEvents.push({ type: "death", entityId: casterId, context: "costHp" });
+                        out.steps.push({ action, events: preEvents }); // mort au coût → sort arrêté
+                        continue;
+                    }
+                }
+
+                // --- Résolution moteur (le lanceur a déjà subi confusion/coût dans le snapshot) ---
                 const snapshot = buildSnapshotFromState(working);
                 const r = resolveSpell(
                     snapshot,
@@ -83,7 +118,7 @@ export function resolveEnemyTurn(before, options = {}, rng) {
                     rng,
                 );
                 applyNewStateToWorking(working.entities, r.newState);
-                out.steps.push({ action, events: r.events, newState: r.newState });
+                out.steps.push({ action, events: [...preEvents, ...r.events], newState: r.newState });
             } else if (action.type === "move") {
                 const ae = working.entities[casterId];
                 if (ae) {

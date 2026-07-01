@@ -46,6 +46,28 @@ test("resolveEnemyTurn : aucune cible → endTurn seul, état inchangé", () => 
   assert.equal(r.finalEntities[0].hp, 100);
 });
 
+test("resolveEnemyTurn : ennemi CONFUS rate son attaque (rng<0.5) → auto-dégât, cible intacte", () => {
+  const before = makeBefore([
+    hero(5, 5),
+    enemy(6, 5, ["strike"], { effects: [{ type: "control", control_effect: "confused", duration: 3 }] }),
+  ]);
+  const r = resolveEnemyTurn(before, { casterId: 1 }, queueRng([0.2, 0.5, 0.5]));
+  assert.equal(r.finalEntities[0].hp, 100, "cible intacte (attaque annulée par la confusion)");
+  assert.equal(r.finalEntities[1].hp, 90, "auto-dégât maxHp*0.10 = 10");
+  assert.ok(r.steps.some((s) => (s.events || []).some((e) => e.type === "confusionFail")), "event confusionFail");
+});
+
+test("resolveEnemyTurn : ennemi confus qui RÉSISTE (rng>=0.5) → attaque normale", () => {
+  const before = makeBefore([
+    hero(5, 5),
+    enemy(6, 5, ["strike"], { effects: [{ type: "control", control_effect: "confused", duration: 3 }] }),
+  ]);
+  // 0.9 = résiste (tirage consommé) ; puis strike : base 0.5, crit 0.99.
+  const r = resolveEnemyTurn(before, { casterId: 1 }, queueRng([0.9, 0.5, 0.99, 0.5]));
+  assert.ok(r.finalEntities[0].hp < 100, "héros touché (confusion résistée)");
+  assert.equal(r.finalEntities[1].hp, 100, "pas d'auto-dégât");
+});
+
 test("resolveEnemyTurn : sort de mouvement (charge) → lanceur déplacé + dégât résolu", () => {
   // Ennemi (7,5) charge le héros (5,5) : atterrit à (6,5), frappe.
   const before = makeBefore([hero(5, 5), enemy(7, 5, ["charge"], { pm: 2 })]);
