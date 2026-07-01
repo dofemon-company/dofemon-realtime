@@ -454,6 +454,7 @@ export async function enemyTurnHandler(req, res) {
     return res.status(200).json({
       steps: result.steps,
       suffixUncertain: result.suffixUncertain,
+      unhandled: result.unhandled, // sort exotique non résolu serveur → le client fait fallback IA locale
       notes: result.notes,
     });
   } catch (error) {
