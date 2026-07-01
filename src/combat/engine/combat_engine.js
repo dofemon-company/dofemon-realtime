@@ -266,17 +266,18 @@ function hasControl(entity, controlType) {
     return entity.effects.some(e => e.type === 'control' && e.control_effect === controlType && e.duration > 0);
 }
 
-// Contrôle OFFENSIF (cible les ennemis) vs self-buff (invulnerable/invisible/reflect/
-// défense). `effect_type: 'control'` est ambigu ; on route par le moteur UNIQUEMENT les
-// contrôles offensifs (disables + vulnérabilité + transfert de dégât), qui ciblent les
-// ennemis comme un debuff. Les self-buffs (dmg_taken_multiplier<1, invulnerable, invisible,
-// reflect_damage, dmg_dealt_multiplier) restent legacy.
-const OFFENSIVE_CONTROL_EFFECTS = new Set(['paralyzed', 'confused', 'sleep', 'skip_turn', 'damage_transfer']);
+// Contrôle OFFENSIF (cible les ENNEMIS) vs contrôle qui cible SOI/UN ALLIÉ (reste legacy).
+// `effect_type: 'control'` est ambigu ; on route par le moteur UNIQUEMENT le contrôle offensif
+// (disables + vulnérabilité), qui cible les ennemis comme un debuff. Restent legacy (ciblent
+// soi/allié) : invulnerable, invisible, reflect_damage, dmg_taken_multiplier<1 (défense),
+// dmg_dealt_multiplier, ET damage_transfer (loyalty/submission — un dofemon ALLIÉ absorbe une
+// part des dégâts du HÉROS pour le protéger ; ce n'est PAS un malus ennemi).
+const OFFENSIVE_CONTROL_EFFECTS = new Set(['paralyzed', 'confused', 'sleep', 'skip_turn']);
 export function isOffensiveControl(spell) {
     if (!spell || spell.effect_type !== 'control') return false;
     const ce = spell.control_effect;
     if (OFFENSIVE_CONTROL_EFFECTS.has(ce)) return true;
-    // Vulnérabilité (dmg_taken_multiplier > 1) = offensif ; réduction (< 1) = self-buff défensif.
+    // Vulnérabilité (dmg_taken_multiplier > 1) = offensif ; réduction (< 1) = défense (self/allié).
     if (ce === 'dmg_taken_multiplier') return (spell.value || 1) > 1;
     return false;
 }
