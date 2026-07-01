@@ -621,19 +621,23 @@ function tryPriorityOffensive(ae, target, spellKey, entities, geo, emitCast, emi
   if (!canCastPriorityOffensiveSpell(ae, target, spell, spellKey)) return false;
   const effectiveRange = getEffectiveSpellRange(spell, ae);
   const dist = Math.abs(ae.x - target.x) + Math.abs(ae.y - target.y);
-  if (dist <= effectiveRange) {
+  const preds = makePredicates(geo, entities);
+  // Ligne de vue requise (comme le ciblage joueur + le client tryPriorityOffensiveSpellWild),
+  // sauf sorts no_line_of_sight. Sinon l'ennemi lançait le contrôle À TRAVERS UN MUR.
+  const losOk = spell.no_line_of_sight || preds.hasLoS(ae.x, ae.y, target.x, target.y);
+  if (dist <= effectiveRange && losOk) {
     // Client tryPriorityOffensiveSpellWild : executeAction(target.x, target.y).
     emitCast(spell, spellKey, { x: target.x, y: target.y });
     return true;
   }
   if (ae.pm > 0) {
-    const preds = makePredicates(geo, entities);
     const reachable = preds.reachable(ae);
     const bestTile = selectApproachTileInRange(reachable, target, effectiveRange);
     if (bestTile) {
-      emitMove(bestTile);
+      emitMove(bestTile); // mute ae.x/ae.y → LdV recalculée depuis la case d'arrivée.
+      const losAfter = spell.no_line_of_sight || preds.hasLoS(ae.x, ae.y, target.x, target.y);
       // Après le déplacement, lancer le CTRL si toujours valide (cf. callback client).
-      if (!hasControlEffect(target, spell.control_effect) && !(ae.spellCooldowns && ae.spellCooldowns[spellKey] > 0)) {
+      if (!hasControlEffect(target, spell.control_effect) && !(ae.spellCooldowns && ae.spellCooldowns[spellKey] > 0) && losAfter) {
         emitCast(spell, spellKey, { x: target.x, y: target.y });
       }
       return true;
