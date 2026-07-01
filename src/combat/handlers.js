@@ -11,7 +11,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { fastForwardCombat } from "./simulation.js";
 import { runShadowComparison } from "./shadow.js";
-import { runShadowAIComparison } from "./shadow_ai.js";
+import { runShadowAIComparison, runEnemyTurnResolutionShadow } from "./shadow_ai.js";
 import { resolveEnemyTurn } from "./enemy_turn.js";
 import { createRng, hashSeed } from "./engine/combat_engine.js";
 
@@ -199,6 +199,15 @@ export async function actionHandler(req, res) {
       runShadowAIComparison(shadowAITurns, { addr: solanaAddress, action });
     } catch (e) {
       console.warn("[shadow-ai] comparaison ignorée:", e && e.message);
+    }
+
+    // SHADOW DE RÉSOLUTION (Palier C — C1b) : rejeu de resolveEnemyTurn(before) +
+    // comparaison STRUCTURELLE à l'état après réel (débusque les trous de résolution
+    // serveur — confusion, cost_hp_percent, chaînage — avant le flip C). Passif, log seul.
+    try {
+      runEnemyTurnResolutionShadow(shadowAITurns, { addr: solanaAddress, action });
+    } catch (e) {
+      console.warn("[shadow-res] comparaison ignorée:", e && e.message);
     }
 
     const { data: existingSave, error: fetchError } = await supabase

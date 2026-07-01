@@ -16,6 +16,8 @@
 
 import { planEnemyTurn, castMovesCaster, diagnoseEnemyTurn } from "./enemy_ai_driver.js";
 import { SPELLS } from "./engine/spells_data.js";
+import { resolveEnemyTurn } from "./enemy_turn.js";
+import { createRng, hashSeed } from "./engine/combat_engine.js";
 
 // DIAGNOSTIC géométrique (temporaire S3 IA) : faits décisifs du tour côté driver
 // (pm, zone, reachable, maxRange, dist, bestTile) pour élucider les écarts d'IA
@@ -146,6 +148,86 @@ export function runShadowAIComparison(aiTurns, meta = {}) {
     `${tag} ${meta.action || ""} turns=${aiTurns.length} match=${matched} partial=${partial} mismatch=${mismatched}`
   );
   return { turns: aiTurns.length, matched, mismatched, partial };
+}
+
+// Signature des effets de CONTRÔLE d'une entité (comparaison RNG-insensible).
+function ctrlSig(e) {
+  return (e.effects || [])
+    .filter((x) => x.type === "control")
+    .map((x) => x.control_effect)
+    .sort()
+    .join(",");
+}
+
+// Graine déterministe pour rejouer un tour (même formule que enemyTurnHandler-like,
+// dérivée de l'état → reproductible). Non transmise.
+function turnSeed(before, casterId) {
+  const key = (before.entities || []).map((e) => `${e.x},${e.y},${e.hp},${e.dead ? 1 : 0}`).join("|");
+  return hashSeed(`res:${casterId}:${key}`);
+}
+
+/**
+ * SHADOW DE RÉSOLUTION (Palier C — C1b). Rejoue resolveEnemyTurn(before) et compare
+ * l'état final au `after` RÉEL du client, de façon STRUCTURELLE (RNG-insensible) :
+ * positions, mort, DIRECTION de dégât (a pris des dégâts ou non, vs before), effets de
+ * contrôle présents. But : débusquer les TROUS de résolution serveur (ex. confusion,
+ * cost_hp_percent, chaînage) AVANT de flipper C. 100% passif (log seul).
+ * NB : on NE compare PAS les HP exacts (le serveur tire son propre RNG ≠ Math.random
+ * client) ; les écarts de MORT à la marge (cible presque morte) sont possibles et
+ * bénins (loggés). Un vrai trou = direction de dégât inversée, mauvaise position,
+ * effet de contrôle manquant/en trop.
+ * @param {Array} aiTurns  { before, after, casterId, isBoss }
+ * @param {object} [meta]
+ * @returns {{turns:number, matched:number, mismatched:number}}
+ */
+export function runEnemyTurnResolutionShadow(aiTurns, meta = {}) {
+  if (!Array.isArray(aiTurns) || aiTurns.length === 0) return { turns: 0, matched: 0, mismatched: 0 };
+  const tag = `[shadow-res${meta.addr ? " " + String(meta.addr).slice(0, 8) : ""}]`;
+  let matched = 0, mismatched = 0;
+
+  for (let i = 0; i < aiTurns.length; i++) {
+    const turn = aiTurns[i];
+    try {
+      if (!turn || !turn.before || !turn.after || turn.casterId == null) continue;
+      const beforeEnts = turn.before.entities || [];
+      const afterEnts = turn.after.entities || [];
+
+      const result = resolveEnemyTurn(
+        turn.before,
+        { casterId: turn.casterId, isBoss: !!turn.isBoss },
+        createRng(turnSeed(turn.before, turn.casterId)),
+      );
+      const got = result.finalEntities || [];
+
+      const diffs = [];
+      const n = Math.max(got.length, afterEnts.length);
+      for (let k = 0; k < n; k++) {
+        const b = beforeEnts[k], g = got[k], a = afterEnts[k];
+        if (!g || !a) { if (!!g !== !!a) diffs.push(`e${k}:presence`); continue; }
+        if (g.x !== a.x || g.y !== a.y) diffs.push(`e${k}:pos(${g.x},${g.y}≠${a.x},${a.y})`);
+        if (!!g.dead !== !!a.dead) diffs.push(`e${k}:dead(${!!g.dead}≠${!!a.dead})`);
+        if (b) {
+          const gDmg = g.hp < b.hp, aDmg = a.hp < b.hp;
+          if (gDmg !== aDmg) diffs.push(`e${k}:dmgDir(${gDmg}≠${aDmg})`);
+        }
+        const gc = ctrlSig(g), ac = ctrlSig(a);
+        if (gc !== ac) diffs.push(`e${k}:ctrl([${gc}]≠[${ac}])`);
+      }
+
+      if (diffs.length === 0) {
+        matched++;
+      } else {
+        mismatched++;
+        console.warn(`${tag} ÉCART turn#${i} caster=${turn.casterId} boss=${!!turn.isBoss} : ${diffs.slice(0, 6).join(" ")}`);
+      }
+    } catch (e) {
+      mismatched++;
+      console.warn(`${tag} ERREUR turn#${i}: ${e && e.message}`);
+    }
+  }
+
+  console.log(`${tag} ${meta.action || ""} turns=${aiTurns.length} match=${matched} mismatch=${mismatched}`);
+  return { turns: aiTurns.length, matched, mismatched };
 }
 
 /**
