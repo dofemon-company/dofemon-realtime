@@ -266,6 +266,21 @@ function hasControl(entity, controlType) {
     return entity.effects.some(e => e.type === 'control' && e.control_effect === controlType && e.duration > 0);
 }
 
+// Contrôle OFFENSIF (cible les ennemis) vs self-buff (invulnerable/invisible/reflect/
+// défense). `effect_type: 'control'` est ambigu ; on route par le moteur UNIQUEMENT les
+// contrôles offensifs (disables + vulnérabilité + transfert de dégât), qui ciblent les
+// ennemis comme un debuff. Les self-buffs (dmg_taken_multiplier<1, invulnerable, invisible,
+// reflect_damage, dmg_dealt_multiplier) restent legacy.
+const OFFENSIVE_CONTROL_EFFECTS = new Set(['paralyzed', 'confused', 'sleep', 'skip_turn', 'damage_transfer']);
+export function isOffensiveControl(spell) {
+    if (!spell || spell.effect_type !== 'control') return false;
+    const ce = spell.control_effect;
+    if (OFFENSIVE_CONTROL_EFFECTS.has(ce)) return true;
+    // Vulnérabilité (dmg_taken_multiplier > 1) = offensif ; réduction (< 1) = self-buff défensif.
+    if (ce === 'dmg_taken_multiplier') return (spell.value || 1) > 1;
+    return false;
+}
+
 // Effets de statut « simples » appliqués via un addEffect unique (combat.js bloc
 // générique l.8535-8611). debuff/control/DoT = sur l'ennemi (3.a) ; buff = sur
 // l'allié (3.b.2). multi_buff/random_buff ont leur propre chemin (ci-dessous).
@@ -308,8 +323,8 @@ export function resolveTargets(snapshot, action) {
 
     // combat.js l.8359-8378 : filtrage par équipe. Les flags movement/typeChange/
     // dispel/displacement sont tous faux pour un sort moteur → le bloc s'applique.
-    if (spell.damage > 0 || spell.effect_type === 'debuff') {
-        // Dégâts / debuff → ennemis.
+    if (spell.damage > 0 || spell.effect_type === 'debuff' || isOffensiveControl(spell)) {
+        // Dégâts / debuff / contrôle offensif (sommeil/paralysie/… + vulnérabilité + transfert) → ennemis.
         targets = targets.filter(t => !sameTeam(caster, t));
     } else if (
         spell.effect_type === 'heal' || spell.effect_type === 'heal_percent' ||
@@ -429,10 +444,9 @@ function resolvePrimaryMovement(snapshot, action, entities, byId, events) {
     });
 
     // --- teleport_self (jump / teleportation) : lanceur → case visée — combat.js l.7906.
-    // teleport:true → la coquille fait un SNAP visuel (pas de glissement).
     if (isTeleportSelf) {
         if (targetX !== caster.x || targetY !== caster.y) {
-            events.push({ type: 'primaryMovement', entityId: casterId, fromX: caster.x, fromY: caster.y, toX: targetX, toY: targetY, teleport: true });
+            events.push({ type: 'primaryMovement', entityId: casterId, fromX: caster.x, fromY: caster.y, toX: targetX, toY: targetY });
             caster.x = targetX;
             caster.y = targetY;
         }
@@ -479,9 +493,7 @@ function resolvePrimaryMovement(snapshot, action, entities, byId, events) {
             return { handled: true, cancelled: true };
         }
         if (landing.x !== caster.x || landing.y !== caster.y) {
-            // assault = téléportation (snap visuel) ; charge = glissement (tween).
-            const teleport = id === 'assault';
-            events.push({ type: 'primaryMovement', entityId: casterId, fromX: caster.x, fromY: caster.y, toX: landing.x, toY: landing.y, teleport });
+            events.push({ type: 'primaryMovement', entityId: casterId, fromX: caster.x, fromY: caster.y, toX: landing.x, toY: landing.y });
             caster.x = landing.x;
             caster.y = landing.y;
         }
