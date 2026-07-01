@@ -27,6 +27,22 @@ import { SPELLS } from "./engine/spells_data.js";
 // Applique les champs d'état « durs » de newState (hp/dead/x/y/pm/elemType) aux
 // entités de travail, par INDEX (identité du moteur). Miroir serveur de
 // combat.js:applySpellNewState (sans le rendu ; effets = via events, cf. limite).
+// effect_type que resolveSpell (moteur) + les portages (confusion/cost_hp/rage) savent
+// résoudre côté serveur. Tout le reste (summon, self_ko, capture…) = NON géré → le tour
+// bascule en FALLBACK (out.unhandled) : le client le résout localement (ancien chemin IA).
+const HANDLED_EFFECT_TYPES = new Set([
+    "damage", "heal", "heal_percent", "buff", "multi_buff", "random_buff",
+    "transfer", "set_hp_to_one", "type_change", "dispel", "debuff", "control", "movement",
+]);
+function isUnhandledSpell(spell, key) {
+    if (!spell) return true;
+    if (spell.self_ko || spell.rest_turn || spell.summon) return true;
+    if (key === "capture" || key === "summon") return true;
+    // effect_type inconnu (ex. summon). Le dégât PUR (pas d'effect_type) reste géré.
+    if (spell.effect_type && !HANDLED_EFFECT_TYPES.has(spell.effect_type)) return true;
+    return false;
+}
+
 function applyNewStateToWorking(entities, newState) {
     (newState.entities || []).forEach((ne, i) => {
         const e = entities[i];
@@ -51,7 +67,7 @@ function applyNewStateToWorking(entities, newState) {
  */
 export function resolveEnemyTurn(before, options = {}, rng) {
     const casterId = options.casterId;
-    const out = { steps: [], finalEntities: [], suffixUncertain: false, notes: [] };
+    const out = { steps: [], finalEntities: [], suffixUncertain: false, unhandled: false, notes: [] };
     try {
         // 1. Décisions (driver pur, aucun RNG) → séquence d'actions atomiques.
         const plan = planEnemyTurn(before, options);
@@ -73,6 +89,15 @@ export function resolveEnemyTurn(before, options = {}, rng) {
                 if (!raw) {
                     out.notes.push(`sort inconnu: ${action.spellKey}`);
                     out.steps.push({ action });
+                    continue;
+                }
+                // Sort non résolu côté serveur (summon/self_ko/capture…) → FALLBACK : on marque
+                // le tour, le client le résoudra localement (ancien chemin IA). On n'essaie pas
+                // de le résoudre (résultat serveur ignoré de toute façon).
+                if (isUnhandledSpell(raw, action.spellKey)) {
+                    out.unhandled = true;
+                    out.notes.push(`fallback client (sort non géré serveur): ${action.spellKey}`);
+                    out.steps.push({ action, unhandled: true });
                     continue;
                 }
                 const spell = { ...raw, id: action.spellKey };
@@ -108,6 +133,24 @@ export function resolveEnemyTurn(before, options = {}, rng) {
                         out.steps.push({ action, events: preEvents }); // mort au coût → sort arrêté
                         continue;
                     }
+                }
+
+                // --- rage : cas spécial (combat.js l.8822). Dégât AoE aux ENNEMIS (moteur, lanceur
+                //     exclu) + buff force au LANCEUR. resolveSpell appliquerait le buff aux ennemis
+                //     (isEngineSpell exclut rage) → on résout le DÉGÂT seul + on émet le buff ciblé
+                //     sur le lanceur (le client reconstruit le buff depuis le sort rage). ---
+                if (action.spellKey === "rage") {
+                    const dmgOnly = { ...spell };
+                    delete dmgOnly.effect_type; delete dmgOnly.stat; delete dmgOnly.value; delete dmgOnly.duration;
+                    const rageSnap = buildSnapshotFromState(working);
+                    const rr = resolveSpell(rageSnap, { casterId, spell: dmgOnly, targetX: action.targetX, targetY: action.targetY }, rng);
+                    applyNewStateToWorking(working.entities, rr.newState);
+                    out.steps.push({
+                        action,
+                        events: [...preEvents, ...rr.events, { type: "applyPrimaryEffect", targetId: casterId }],
+                        newState: rr.newState,
+                    });
+                    continue;
                 }
 
                 // --- Résolution moteur (le lanceur a déjà subi confusion/coût dans le snapshot) ---

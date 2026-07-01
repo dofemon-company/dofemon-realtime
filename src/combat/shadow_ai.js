@@ -150,15 +150,6 @@ export function runShadowAIComparison(aiTurns, meta = {}) {
   return { turns: aiTurns.length, matched, mismatched, partial };
 }
 
-// Signature des effets de CONTRÔLE d'une entité (comparaison RNG-insensible).
-function ctrlSig(e) {
-  return (e.effects || [])
-    .filter((x) => x.type === "control")
-    .map((x) => x.control_effect)
-    .sort()
-    .join(",");
-}
-
 // Graine déterministe pour rejouer un tour (même formule que enemyTurnHandler-like,
 // dérivée de l'état → reproductible). Non transmise.
 function turnSeed(before, casterId) {
@@ -210,8 +201,11 @@ export function runEnemyTurnResolutionShadow(aiTurns, meta = {}) {
           const gDmg = g.hp < b.hp, aDmg = a.hp < b.hp;
           if (gDmg !== aDmg) diffs.push(`e${k}:dmgDir(${gDmg}≠${aDmg})`);
         }
-        const gc = ctrlSig(g), ac = ctrlSig(a);
-        if (gc !== ac) diffs.push(`e${k}:ctrl([${gc}]≠[${ac}])`);
+        // NB : on NE compare PAS les EFFETS ici. resolveEnemyTurn n'applique pas les
+        // effets à son état de travail (ils voyagent dans les events → client) — limite
+        // C1 assumée. La parité des effets par cast est déjà couverte par le SPELL-shadow
+        // (pour les sorts routés). La shadow-res valide l'ORCHESTRATION : positions +
+        // direction de dégât + mort (chaînage move/cast/atterrissage).
       }
 
       if (diffs.length === 0) {

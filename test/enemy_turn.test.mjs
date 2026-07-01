@@ -68,6 +68,22 @@ test("resolveEnemyTurn : ennemi confus qui RÉSISTE (rng>=0.5) → attaque norma
   assert.equal(r.finalEntities[1].hp, 100, "pas d'auto-dégât");
 });
 
+test("resolveEnemyTurn : rage → dégât aux ennemis + buff event ciblé sur le LANCEUR", () => {
+  const before = makeBefore([hero(6, 4), enemy(6, 5, ["rage"])]);
+  const r = resolveEnemyTurn(before, { casterId: 1 }, queueRng([0.5, 0.99, 0.5, 0.99]));
+  const rageStep = r.steps.find((s) => s.action.type === "cast" && s.action.spellKey === "rage");
+  assert.ok(rageStep, "un step rage");
+  const buffEv = (rageStep.events || []).find((e) => e.type === "applyPrimaryEffect");
+  assert.ok(buffEv && buffEv.targetId === 1, "buff appliqué au LANCEUR (index 1), pas au héros");
+  assert.ok(r.finalEntities[0].hp < 100, "héros adjacent touché par le dégât");
+});
+
+test("resolveEnemyTurn : sort non géré serveur (self_destruction) → out.unhandled = fallback client", () => {
+  const before = makeBefore([hero(6, 4), enemy(6, 5, ["self_destruction"])]);
+  const r = resolveEnemyTurn(before, { casterId: 1 }, queueRng([0.5, 0.99, 0.5]));
+  assert.equal(r.unhandled, true, "tour marqué unhandled (le client résoudra localement)");
+});
+
 test("resolveEnemyTurn : sort de mouvement (charge) → lanceur déplacé + dégât résolu", () => {
   // Ennemi (7,5) charge le héros (5,5) : atterrit à (6,5), frappe.
   const before = makeBefore([hero(5, 5), enemy(7, 5, ["charge"], { pm: 2 })]);
