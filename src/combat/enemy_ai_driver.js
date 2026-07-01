@@ -118,7 +118,17 @@ function buildGeoCtx(before) {
   );
   const blocked = new Set(Array.isArray(before.blockedTerrain) ? before.blockedTerrain : []);
   const isTerrainBlocked = (x, y) => blocked.has(`${x},${y}`);
-  const blocksLoS = isTerrainBlocked; // côté serveur, mur de terrain = bloque la LdV (parité gameMap===1/2)
+  // LdV : prédicat SÉPARÉ du mouvement. La vue est bloquée par blocksLineOfSight (murs +
+  // décos hautes), PAS par les trous (qu'on voit par-dessus) — alors que le mouvement est
+  // bloqué par isWalkable (murs + trous). Utiliser blockedTerrain pour la LdV faisait diverger
+  // le driver du client (il planifiait des attaques que le client ne fait pas, mismatch
+  // shadow-ai `headache`). Le client fournit maintenant `blockedLoS` ; fallback sur
+  // blockedTerrain pour les vieilles captures (avant le fix).
+  const losBlocked = new Set(
+    Array.isArray(before.blockedLoS) ? before.blockedLoS
+      : (Array.isArray(before.blockedTerrain) ? before.blockedTerrain : [])
+  );
+  const blocksLoS = (x, y) => losBlocked.has(`${x},${y}`);
 
   // entities = liste vivante de travail (mutée au fil du tour pour l'occupation/positions).
   return { mapBounds, statueActive, isTerrainBlocked, blocksLoS };
