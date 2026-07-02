@@ -8,11 +8,13 @@
 // Le client Supabase est cree de maniere LAZY : si les variables d'env manquent,
 // seules les routes combat renvoient 503 — le serveur de presence continue de tourner.
 
+import { randomBytes } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import { fastForwardCombat } from "./simulation.js";
 import { runShadowComparison } from "./shadow.js";
 import { runShadowAIComparison, runEnemyTurnResolutionShadow } from "./shadow_ai.js";
 import { resolveEnemyTurn } from "./enemy_turn.js";
+import { computeVictoryRewards, isVictoryState } from "./victory.js";
 import { createRng, hashSeed } from "./engine/combat_engine.js";
 
 const TURN_DURATION_MS = 20000; // 20 s par tour (heros/allie)
@@ -418,6 +420,96 @@ export async function currentHandler(req, res) {
     });
   } catch (error) {
     console.error("[combat/current] erreur:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+// =========================================
+// POST /api/combat/victory  (Palier D — D1)
+// =========================================
+// Le SERVEUR tire les récompenses de victoire PVM (loot RNG serveur = infalsifiable,
+// xp/gold recalculés des formules) ; le client APPLIQUE/AFFICHE ce qui est renvoyé.
+//
+// ⚠️ ÉTAPE D : l'état final vient du CLIENT (l'état stocké serveur est en retard
+// d'un coup au moment de la victoire — le coup fatal n'est flushé qu'au endTurn
+// suivant, qui n'arrive jamais). L'autorité complète sur l'état = Palier B.
+//
+// IDEMPOTENCE (anti re-roll) : un même combat (clé = activeCombat.createdAt) ne
+// tire ses récompenses qu'UNE fois ; tout rappel renvoie le tirage mémorisé.
+// Stockage EN MÉMOIRE process (le VPS est mono-process) : save_data ne convient
+// pas (save-game réécrit le blob entier du client → champ serveur balayé).
+// L'enforcement durable (garde save-game sur les deltas) = brique D suivante.
+const _victoryCache = new Map(); // `${addr}:${combatKey}` -> { at, rewards }
+const VICTORY_CACHE_TTL_MS = 60 * 60 * 1000; // 1 h : couvre retries + reconnexions
+const VICTORY_CACHE_MAX = 5000;
+
+function pruneVictoryCache(now) {
+  for (const [k, v] of _victoryCache) {
+    if (now - v.at > VICTORY_CACHE_TTL_MS) _victoryCache.delete(k);
+  }
+  // Filet de taille : purge des plus anciens (ordre d'insertion de Map).
+  while (_victoryCache.size > VICTORY_CACHE_MAX) {
+    _victoryCache.delete(_victoryCache.keys().next().value);
+  }
+}
+
+export async function victoryHandler(req, res) {
+  const supabase = getSupabase();
+  if (!supabase) return res.status(503).json({ error: "Combat backend not configured" });
+
+  try {
+    const solanaAddress = await resolveSolanaAddress(req, res, supabase);
+    if (!solanaAddress) return;
+
+    const { combatState: clientFinalState } = req.body || {};
+    if (!clientFinalState || !Array.isArray(clientFinalState.entities)) {
+      return res.status(400).json({ error: "combatState (with entities) is required" });
+    }
+    if (!isVictoryState(clientFinalState)) {
+      return res
+        .status(400)
+        .json({ error: "Not a victory state", actionResult: "not_victory" });
+    }
+
+    // Clé d'idempotence : createdAt du combat stocké serveur (posé par /start),
+    // repli sur celui de l'état client (vieux combats d'avant /start).
+    const { data: existingSave, error: fetchError } = await supabase
+      .from("player_saves")
+      .select("save_data")
+      .eq("solana_address", solanaAddress)
+      .single();
+    if (fetchError && fetchError.code !== "PGRST116") {
+      return res.status(500).json({ error: "Database error" });
+    }
+    const combatKey =
+      existingSave?.save_data?.activeCombat?.createdAt ??
+      clientFinalState.createdAt ??
+      null;
+
+    const now = Date.now();
+    pruneVictoryCache(now);
+    const cacheKey = combatKey != null ? `${solanaAddress}:${combatKey}` : null;
+    if (cacheKey && _victoryCache.has(cacheKey)) {
+      return res
+        .status(200)
+        .json({ rewards: _victoryCache.get(cacheKey).rewards, replay: true });
+    }
+
+    // Graine NON prédictible (crypto), jamais dérivée de l'état : le client ne
+    // peut ni prévoir le loot, ni le re-roller (idempotence ci-dessus).
+    const seed = hashSeed(
+      `${solanaAddress}:${combatKey}:${randomBytes(8).toString("hex")}`
+    );
+    const rewards = computeVictoryRewards(clientFinalState, createRng(seed));
+
+    if (cacheKey) _victoryCache.set(cacheKey, { at: now, rewards });
+
+    console.log(
+      `[combat/victory] ${solanaAddress.slice(0, 8)}… mode=${rewards.mode} xp=${rewards.xpTotal} gold=${rewards.coinsTotal} drops=${rewards.enemyDrops.reduce((n, d) => n + d.drops.length, 0)}`
+    );
+    return res.status(200).json({ rewards, replay: false });
+  } catch (error) {
+    console.error("[combat/victory] erreur:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 }

@@ -9,7 +9,7 @@
 
 import tools from "@colyseus/tools";
 import { WorldRoom } from "./rooms/WorldRoom.js";
-import { startHandler, actionHandler, currentHandler, enemyTurnHandler } from "./combat/handlers.js";
+import { startHandler, actionHandler, currentHandler, enemyTurnHandler, victoryHandler } from "./combat/handlers.js";
 
 const PORT = Number(process.env.PORT) || 2567;
 
@@ -141,10 +141,12 @@ tools.listen(
       app.options("/api/combat/action", combatCors);
       app.options("/api/combat/current", combatCors);
       app.options("/api/combat/enemy-turn", combatCors);
+      app.options("/api/combat/victory", combatCors);
       app.post("/api/combat/start", combatCors, startHandler);
       app.post("/api/combat/action", combatCors, actionHandler);
       app.get("/api/combat/current", combatCors, currentHandler);
       app.post("/api/combat/enemy-turn", combatCors, enemyTurnHandler);
+      app.post("/api/combat/victory", combatCors, victoryHandler);
     },
   },
   PORT
